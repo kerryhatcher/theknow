@@ -21,7 +21,7 @@ never shipped. Back to the [overview](README.md).
 | OpenSSF malicious-packages | **Shipped**, OSV format, daily | **Yes** — OSV API |
 | Sigstore keyless signing | **Shipped/mature** — CPython 3.11+ signed; PyPI integration in progress | Partial |
 | SLSA Level 2/3 provenance | **Shipped** on GitHub Actions; PyPI adoption low | Partial |
-| PEP 458/480 (TUF for PyPI) | **Proposed, deferred since 2019** — no ship date | n/a |
+| PEP 458/480 (TUF for PyPI) | **458 Accepted but unimplemented since 2019; 480 still Draft.** No ship date | n/a |
 
 ## Project Quarantine
 
@@ -229,10 +229,11 @@ could verify you're talking to the real PyPI rather than a hostile mirror or MIT
 extends that to end-to-end developer signing, so a compromise of PyPI's online keys wouldn't
 break package authenticity.
 
-**Both have been deferred since early 2019** pending funding and implementation effort, with
-no ship date and no place on the 2026 roadmap. They come up constantly in discussion; neither
-exists. What's actually protecting you is HTTPS plus PEP 740 attestations at the artifact
-level.
+**PEP 458's status is Accepted, not open**: it was approved and then deferred in early 2019 until
+funding could be secured to implement it, and the implementation never came. PEP 480 is still
+Draft. Neither has a ship date or a place on the 2026 roadmap. The distinction matters if you are
+deciding whether to plan around TUF: the design is ratified, only unbuilt. What's actually
+protecting you today is HTTPS plus PEP 740 attestations at the artifact level.
 
 ## Signal checklist
 

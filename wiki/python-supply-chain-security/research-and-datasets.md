@@ -32,8 +32,8 @@ LastPyMile, and Bad Snakes). Grouped by what they contribute.
 | Cross-Language Detection of Malicious Packages (Ladisa et al.) | ACSAC 2023 | [2310.09571](https://arxiv.org/abs/2310.09571) | **141 language-independent static features** (install scripts, obfuscated strings, URLs). One model over both registries found 58 unknown malicious (38 npm, 20 PyPI) in 31,292 packages |
 | ConfuGuard / TypoSmart (Jiang, Çakar, Lysenko, Davis) | USENIX Security 2025 | [2502.20528](https://arxiv.org/abs/2502.20528) | Fine-tuned name embeddings + metadata FP suppression. Reported FPs 80% → 28%, a 65% relative reduction |
 | Typosquatting and Combosquatting Attacks on the Python Ecosystem (Vu et al.) | EuroS&P Workshops 2020 | [PDF](https://conferences.computer.org/eurosp/pdfs/EuroSPW2020-7k9FlVRX4z43j4uE2SeXU0/859700a508/859700a508.pdf) | The string-similarity baseline for name attacks |
-| py2src (Vu, Pirocca, Staicu, Pradel) | ASE 2021 | [repo](https://github.com/simonepirocca/py2src) | Infers the real GitHub source for a PyPI package with a −4 to +4 reliability score. Prerequisite for differential analysis |
-| LastPyMile (Vu et al.) | ESEC/FSE 2021 | [PDF](https://research.vu.nl/ws/portalfiles/portal/226504739/LastPyMile.pdf) | Source-vs-artifact differential analysis. **<1% FP at ~95% detection** |
+| py2src (Duc-Ly Vu) | ASE 2021 | [repo](https://github.com/simonepirocca/py2src) | Infers the real GitHub source for a PyPI package with a −4 to +4 reliability score. Prerequisite for differential analysis. Single-author paper per the DOI, DBLP and Semantic Scholar records; the tool repo sits under a different GitHub account, which is where citations listing extra authors come from |
+| LastPyMile (Vu, Massacci, Pashchenko, Plate, Sabetta) | ESEC/FSE 2021 | [PDF](https://research.vu.nl/ws/portalfiles/portal/226504739/LastPyMile.pdf) | Source-vs-artifact differential analysis. Validated on 3 malicious plus 3 benign artifacts: all malicious ones detected, scanner alerts on them cut by one to two orders of magnitude, zero alerts on the benign ones. The paper reports no precision or recall figure |
 | One Detector Fits All (Montaruli et al.) | ACSAC 2025 | [2512.04338](https://arxiv.org/abs/2512.04338) | Robust adaptive detection generalizing from PyPI to enterprise settings |
 
 ### Behavior sequences and ML
@@ -52,7 +52,7 @@ LastPyMile, and Bad Snakes). Grouped by what they contribute.
 |---|---|---|---|
 | eDySec | 2026 | [2604.26219](https://arxiv.org/abs/2604.26219) | **eBPF** syscall/network/file monitoring during and after install. 50% feature-dimension reduction, **82% fewer FPs and 79% fewer FNs than static**, 170ms inference |
 | DySec | 2025 | [2503.00324](https://arxiv.org/abs/2503.00324) | ML over sandboxed runtime behavior; catches runtime evasion and dynamic payloads |
-| PyFEX | 2026 | [2606.02196](https://arxiv.org/html/2606.02196) | **Forced execution.** 212 detections across 91.3k downloaded packages that rules missed |
+| PyFEX | 2026 | [2606.02196](https://arxiv.org/html/2606.02196) | **Forced execution.** 212 previously unknown malicious packages found in live PyPI deployment, together accounting for 91,648+ downloads, that rules missed |
 
 ### LLM-based
 
@@ -85,7 +85,8 @@ LastPyMile, and Bad Snakes). Grouped by what they contribute.
 4. **Cross-language features generalize.** Install scripts, obfuscated strings, and URLs are
    ecosystem-independent enough for one model to serve npm and PyPI.
 5. **Narrowing the input beats sharpening the rule.** LastPyMile (diff only) and taint slicing
-   (99.4% reduction) both win by analyzing less.
+   (99.4% reduction) both win by analyzing less. LastPyMile's reported result is the collapse in
+   alert volume, not a measured precision figure.
 6. **Trend since 2024:** LLM integration (97–99% F1 in the best studies, but see the Endor Labs
    counterexample on [LLM triage](llm-triage.md)), explainability for security-ops review,
    kernel-level instrumentation via eBPF, and graph-based propagation modeling.
@@ -193,9 +194,10 @@ optimistic relative to production.**
 
 And 70:1 is the *package-count* ratio, not the prior a live detector faces. A scanner sits on the
 release stream: roughly 6,000,000 releases a year against on the order of 1,000 newly catalogued
-malicious packages a year, which is a per-release base rate nearer **1 in 10,000**. That figure is
-an estimate derived from the numbers on this page rather than a measured one, so treat the order
-of magnitude, not the digits, as the finding. Calibrate thresholds against the release rate
+malicious packages a year, which is a per-release base rate nearer **1 in 6,000**. That figure is
+an estimate derived from the numbers on this page rather than a measured one, and it divides
+releases by malicious *packages*, while a malicious package often ships several releases, so the
+true rate skews lower still. Treat the order of magnitude, not the digits, as the finding. Calibrate thresholds against the release rate
 either way, because false-positive rate becomes the metric that decides whether the tool ships.
 
 ## Handling live malware safely

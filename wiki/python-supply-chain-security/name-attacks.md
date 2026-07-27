@@ -62,8 +62,8 @@ ones. Cuts false positives, costs more compute.
 **Popularity thresholds.** SpellBound/TypoGard applies name transformations to known
 packages and compares candidates against the popular set; with a 15,000-weekly-download
 threshold the reported alert rate is ~0.05% for npm and ~0.5% for PyPI. Lower FP than naive
-edit distance alone. (Those two percentages are carried from secondary summaries; this pass did
-not verify them against a SpellBound or TypoGard paper, and no such paper is in the source list
+edit distance alone. (Those two percentages are carried from secondary summaries. They have not
+been verified against a SpellBound or TypoGard paper, and no such paper is in the source list
 below. Treat them as unverified.)
 
 **Recipe 1: typosquat screen (single-digit ms per package)**
@@ -97,8 +97,8 @@ this is cheap enough for a batch sweep or a CI gate, but at ~10ms it is *not* fr
 a 200-package resolved tree costs a couple of seconds. Bucket candidates by length or first
 character before the distance loop if you need install-time latency.
 
-Distance ≤1 flags immediately; distance 2 with both characters keyboard-adjacent is medium
-confidence.
+Distance ≤1 makes a candidate immediately; distance 2 with both characters keyboard-adjacent is
+medium confidence. Neither blocks on its own: real sibling packages sit one edit apart.
 
 ### Beyond edit distance: ConfuGuard
 
@@ -234,9 +234,13 @@ API, or the `bigquery-public-data.pypi` public dataset for snapshot-based scanni
 
 1. **Namespace reservation**: pre-register every internal name on public PyPI, even unused,
    so nobody else can.
-2. **Private-index-first configuration**: `pip.conf` / `.pypirc` ordering, or better,
-   `--index-url` naming *only* the private index rather than `--extra-index-url`, which
-   consults both.
+2. **Single-index configuration**: point `index-url` at exactly one index, either a private index
+   or a pull-through proxy that fronts PyPI. pip has **no index priority**: `--extra-index-url`
+   merges candidate sets and the resolver picks by version, so a `99.0.0` on public PyPI wins no
+   matter which index you list first. Ordering entries in `pip.conf` buys you nothing, and
+   `.pypirc` is upload configuration that pip never reads during installation. If you genuinely
+   need two indexes, use a resolver with explicit priority (`uv --index-strategy first-index`) or a
+   proxy that shadows internal names.
 3. **Version pinning**: pin exact versions rather than allowing auto-upgrade.
 4. **CI isolation**: no implicit public index in build environments.
 5. **2FA and strong credentials** on the private index.
@@ -296,8 +300,8 @@ maintainers. No PyPI-specific replication of that measurement exists, but LiteLL
 
 ## Repo-vs-artifact divergence
 
-The LastPyMile approach (Vu et al., ESEC/FSE 2021), and the highest-precision technique in
-this whole topic.
+The LastPyMile approach (Vu, Massacci, Pashchenko, Plate, Sabetta; ESEC/FSE 2021), and the
+technique with the best signal-to-noise ratio in this whole topic.
 
 **The attack it catches:** the attacker never touches the source repository. They inject only
 into the built wheel, via account takeover or a compromised build pipeline. Anyone reading
@@ -313,8 +317,15 @@ the GitHub repo sees clean code; anyone running `pip install` gets the payload.
    connections, environment access, and decode-then-exec.
 
 **Why it wins:** it reduces the analysis surface to injected code only, so the legitimate
-patterns in the developer's own code never generate alerts. Measured at **<1% FP with ~95%
-detection**: the best precision/recall pair in the benchmark set.
+patterns in the developer's own code never generate alerts. Be careful how you quote its numbers.
+The paper reports no precision or recall figure, and a widely repeated "<1% FP at ~95% detection"
+pair appears nowhere in it. What it does report is a validation on three malicious and three benign
+artifacts, where the malicious ones were all detected, alert counts on them dropped by one to two
+orders of magnitude (1,044 Bandit alerts down to 12 on `urlib3-1.21.1`, 489 down to 12 for
+Warehouse Malware Checks on `setup-tools-36.0.1`), and the benign artifacts produced no alerts at
+all. That is a strong alert-reduction result on a small manual sample, not a benchmarked FP rate
+comparable to the other rows on
+[Detection quality](detection-quality.md#benchmark-numbers).
 
 **Recipe 4 sketch (5–30s per package)**
 
@@ -326,6 +337,8 @@ def check_artifact_divergence(repo_url, artifact_path, version_tag, workdir):
     # Full clone, then check out the tag matching the release under analysis.
     # A --depth=1 clone gets the tip of the default branch, so ordinary post-release
     # commits show up as "modified files" and manufacture divergence on healthy packages.
+    # This tag checkout is the cheap approximation; the full-history variant below is
+    # what actually keeps the alert volume down.
     subprocess.run(["git", "clone", repo_url, src_root], check=True)
     subprocess.run(["git", "-C", src_root, "checkout", version_tag], check=True)
 
@@ -334,24 +347,28 @@ def check_artifact_divergence(repo_url, artifact_path, version_tag, workdir):
     artifact_files = {p.relative_to(art_root): p for p in find_python_files(art_root)}
     source_files = {p.relative_to(src_root): p for p in find_python_files(src_root)}
 
+    findings = []                  # accumulate: one injected file must not hide the rest
     for rel in artifact_files.keys() - source_files.keys():
-        if scan_with_yara(artifact_files[rel], MALWARE_RULES) or run_bandit(artifact_files[rel]):
-            return ("PHANTOM_FILE_MALICIOUS", rel)
+        # scan_with_yara takes bytes at both call sites, here and on the diff below.
+        if (scan_with_yara(artifact_files[rel].read_bytes(), MALWARE_RULES)
+                or run_bandit(artifact_files[rel])):
+            findings.append(("PHANTOM_FILE_MALICIOUS", rel))
 
     for rel in artifact_files.keys() & source_files.keys():
         if hash_file(artifact_files[rel]) != hash_file(source_files[rel]):
             diff = compute_diff(source_files[rel], artifact_files[rel])
-            if scan_with_yara(diff, MALWARE_RULES):
-                return ("MODIFIED_FILE_MALICIOUS", rel, diff)
-    return None
+            if scan_with_yara(diff.encode(), MALWARE_RULES):
+                findings.append(("MODIFIED_FILE_MALICIOUS", rel, diff))
+    return findings
 ```
 
 The two details that decide whether this works at all: compare on **relative** paths, and compare
 against the **release**, not `HEAD`. Where no tag maps to the version, hash every blob reachable
 from any commit (`git rev-list --objects --all`) and call a file phantom only if its hash appears
-nowhere in history. That full-history comparison is what LastPyMile actually does, and the <1% FP
-figure belongs to that method: a HEAD-only shallow clone gives up the precision the technique is
-being chosen for.
+nowhere in history. That full-history comparison is what LastPyMile actually does, and it is where
+the low alert volume comes from. The tag-checkout sketch above is the cheap approximation: a
+`HEAD`-only shallow clone is worse again, because ordinary post-release commits then read as
+divergence on healthy packages.
 
 Thresholds: a phantom file with a YARA match blocks immediately; Bandit findings in a phantom
 or modified file get reviewed; a modified file whose diff is >50% additions is medium
@@ -360,7 +377,7 @@ repos), 1–5s of scanning per file. Suitable for post-download verification or 
 of critical packages, not for a real-time install gate.
 
 **Prerequisite and its limitation:** you need to know the real source repository.
-[py2src](https://github.com/simonepirocca/py2src) (Vu et al., ASE 2021) automates that
+[py2src](https://github.com/simonepirocca/py2src) (Duc-Ly Vu, ASE 2021) automates that
 inference and scores its own reliability from -4 to +4. Where no repo exists or the link is
 wrong, this technique simply doesn't apply, which is also why starjacking matters.
 
@@ -370,19 +387,26 @@ package and never in the repo.
 
 ## Metadata red flags recipe
 
-**Recipe 3 (~500ms per package, needs WHOIS and GitHub API)**
+**Recipe 3 (~500ms per package; needs WHOIS, the GitHub API, and a download-stats source)**
 
 ```python
-def check_metadata_flags(pkg):
+def check_metadata_flags(pkg, downloads_last_week=None):
     flags = []
     if not pkg.get("summary") or len(pkg["summary"]) < 10:
         flags.append("MISSING_DESCRIPTION")
     if pkg["version"] == "0.0.0":
         flags.append("VERSION_000")
-    if is_recently_registered(extract_domain(pkg["maintainer_email"]), days=30):
+    # Same fallback as Recipe 2: PyPI projects often populate only author_email,
+    # and an absent address must not reach extract_domain().
+    email = pkg.get("maintainer_email") or pkg.get("author_email") or ""
+    domain = extract_domain(email)
+    if domain and is_recently_registered(domain, days=30):
         flags.append("DOMAIN_RESURRECTION")
     if pkg.get("home_page", "").startswith("https://github.com/"):
-        if fetch_github_stars(pkg["home_page"]) > 5000 and pkg["downloads_last_week"] < 100:
+        # Guard the sentinel: PyPI's JSON API reports -1 for every download counter.
+        # Star fetch second, so the cheap test short-circuits the rate-limited one.
+        if (downloads_last_week is not None and 0 <= downloads_last_week < 100
+                and fetch_github_stars(pkg["home_page"]) > 5000):
             flags.append("STARJACKING_SIGNAL")
     if pkg["name"] not in pkg.get("description", ""):
         flags.append("NAME_MISMATCH")
@@ -391,6 +415,12 @@ def check_metadata_flags(pkg):
 
 One flag is informational. Two or more warrants review. `DOMAIN_RESURRECTION` or
 `STARJACKING_SIGNAL` alone is high confidence, both are near-impossible to hit accidentally.
+
+Where the download count comes from matters more than it looks. PyPI's JSON API returns
+`info.downloads` as `{"last_day": -1, "last_week": -1, "last_month": -1}` for every project, a
+placeholder rather than data, so real counts have to come from pypistats.org or the
+`bigquery-public-data.pypi` dataset. Pass the `-1` straight through and the starjacking branch
+degenerates into "links a popular repo", which is true of a great many honest packages.
 
 Cost note: GitHub's unauthenticated API allows 60 requests/hour, so cache aggressively. WHOIS
 runs ~500ms per query unless you use a batch API. This is an hourly or daily scan, not a
@@ -409,10 +439,10 @@ numbers are on [Platform defenses](platform-defenses.md).
 
 | # | Recipe | Cost | FP rate | Catches |
 |---|---|---|---|---|
-| 1 | Levenshtein typosquat screen | ~10ms pure Python, ~1–5ms with a C-accelerated distance | <1% | Most classic typosquats |
+| 1 | Levenshtein typosquat screen | ~10ms pure Python, ~1–5ms with a C-accelerated distance | High as a classifier: prior string-distance work reports ~80% FP, and ConfuGuard only reaches 28% by adding metadata. Output is a candidate list for stage 2, never a block | Most classic typosquats |
 | 2 | Dependency-confusion surveillance | ~1ms/name | Low, *provided* you allowlist your own reserved names | Internal-name collisions, `99.x` versions |
 | 3 | Metadata red flags | ~500ms | Medium | Domain resurrection, starjacking, placeholders |
-| 4 | Repo-artifact divergence | 5–30s | <1% with full-history comparison; much worse against a shallow `HEAD` clone | Account takeover, build compromise |
+| 4 | Repo-artifact divergence | 5–30s | Low, and the lowest here, *provided* you compare against full history; much worse against a shallow `HEAD` clone. No published rate, see the caveat above | Account takeover, build compromise |
 | 5 | Attestation validation | ~10ms | n/a | Unauthorized publishers — where adopted |
 
 Add one more filter on top of all of them: run name-risk checks against the **full resolved

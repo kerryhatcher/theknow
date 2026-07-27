@@ -20,10 +20,13 @@ behavior, and skip the rest unless you have a specific reason.
 ## GuardDog (DataDog)
 
 **Repo:** [DataDog/guarddog](https://github.com/DataDog/guarddog) · Python · Apache-2.0 ·
-~1,150★ · v3.0.2 (June 2026), actively maintained
+~1,165★ · v3.1.0 (July 2026), actively maintained. Releases land every few weeks, so read the
+repo for the current version rather than trusting this line.
 
-The default choice for the static layer, and the tool the research consistently recommends
-reusing rather than reinventing.
+The default choice for the static layer, and the one tool here worth reusing rather than
+reinventing: it is the detector behind the DataDog malicious-package dataset, and it is what the
+published tool-vs-tool comparisons benchmark against
+([arXiv:2603.27549](https://arxiv.org/abs/2603.27549)).
 
 **Detection layers**
 
@@ -31,18 +34,29 @@ reusing rather than reinventing.
    history, release patterns, domain resurrection (maintainer email domain re-registered after
    release), missing info (no description, version `0.0.0`), typosquatting (Levenshtein ≤1
    against the top 5,000 packages, or exactly two characters swapped).
-2. **Static analysis**: Semgrep YAML rules in `guarddog/analyzer/sourcecode/`, plus YARA
-   scanning and user-supplied rules since 2.0.
+2. **Source code analysis**: YARA rules in `guarddog/analyzer/sourcecode/`, run in the main
+   process behind a sandbox (network blocked, filesystem restricted to the extracted files).
+   Semgrep was the engine through 2.x and was **removed in 3.0**: `yara-python` is the only rule
+   engine now, and every rule ID was renamed. User-supplied rules are still supported.
 
-**Rule inventory** (the 15 generic Python/multi-language rules):
+**Rule inventory** (v3.1.0 ships 54 rule files in two families):
 
-`api-obfuscation` · `clipboard-access` · `cmd-overwrite` · `code-execution` ·
-`dll-hijacking` · `download-executable` · `exec-base64` · `exfiltrate-sensitive-data` ·
-`obfuscation` · `pyarmor` · `screenshot` · `shady-links` · `silent-process-execution` ·
-`steganography` · `unicode`
+* `capability-*`, a capability with no judgement attached: `capability-filesystem-read`,
+  `capability-filesystem-write-executable`, `capability-network-outbound`,
+  `capability-network-download`, `capability-process-spawn`, `capability-runtime-clipboard` and
+  similar.
+* `threat-*`, a combination that is suspicious in itself:
+  `threat-runtime-obfuscation-base64exec`, `threat-process-spawn-silent`,
+  `threat-network-outbound-shady-links`, `threat-process-cryptomining`,
+  `threat-setup-network-in-install`, `threat-network-reverse-shell`, and about forty more.
 
-Plus 3 Go-specific, 9 npm/JavaScript, and 6 RubyGems rules for the other ecosystems it covers
-(PyPI, npm, Go modules, RubyGems, GitHub Actions, VSCode extensions).
+Each rule carries `severity`, `specificity`, `sophistication`, and MITRE-tactic metadata in its
+`meta` block plus a `path_include` extension list. Rules are multi-language inside one file
+(Python, JavaScript/TypeScript, Go, Ruby strings side by side), covering the ecosystems the tool
+scans: PyPI, npm, Go modules, RubyGems, GitHub Actions, VSCode extensions.
+
+Names change between major versions, so pin the rule IDs you depend on to a GuardDog version and
+list the directory to confirm them.
 
 **Design philosophy, worth internalizing:** *"Capability + threat together indicates actual
 risk."* It deliberately avoids flagging suspicious patterns in isolation, which is the same
@@ -69,7 +83,7 @@ main FP source. Historically it concentrates on `setup.py` to keep FPs down, so 
 `__init__.py` or a lazily imported submodule can slip past. Its hardcoded patterns have a
 [published bypass](https://medium.com/@heyyoad/how-we-evaded-datadogs-malicious-package-detection-lessons-for-better-security-e8c9b185f97e)
 using f-string-assembled `__import__` calls. Static-only measurements put it around 40% FP /
-60% TP.
+60% TP, though those measurements predate the 3.0 rewrite of the ruleset.
 
 Datadog also ships a **Supply Chain Firewall** that blocks installation of packages GuardDog
 flags, if you want enforcement rather than reporting.
@@ -161,10 +175,12 @@ Different job, known vulnerabilities, not malware, but you want one.
 
 ## The rest of the OSS landscape
 
-**[Semgrep](https://github.com/semgrep/semgrep)**: OCaml engine, YAML rules; the engine is
-proprietary but `semgrep-oss` is free and the [rules](https://github.com/semgrep/semgrep-rules)
-are open (LGPL). It's what GuardDog is built on, so reach for it directly only when you're
-writing custom rules.
+**[Semgrep](https://github.com/semgrep/semgrep)**: OCaml engine, YAML rules. The engine
+(`semgrep-oss`, what `pip install semgrep` gives you) is LGPL-2.1 and the community
+[rules](https://github.com/semgrep/semgrep-rules) are open; the commercial parts are the Pro
+engine's cross-file and cross-function analysis and the hosted platform. GuardDog 3.x no longer
+uses it, so reach for Semgrep directly when you want taint-mode dataflow rules of your own,
+which YARA cannot express.
 
 **[Bandit](https://github.com/PyCQA/bandit)**: PyCQA, Apache-2.0, ~8,150★. SAST for
 *insecure* code: hardcoded secrets, SQL injection, weak crypto, unsafe deserialization. It
@@ -187,7 +203,8 @@ package with very broad matching (~4.26 flagged locations per package), and
 Python tool.
 
 **YARA-based approaches**: YARA is the right engine for byte-pattern signatures (marshal
-magic, zlib headers, encoded blobs) and GuardDog 2.0 added support for it. `maloss` is the
+magic, zlib headers, encoded blobs). GuardDog 2.0 added it alongside Semgrep and 3.0 made it the
+only source-code engine, which is the clearest signal of where this niche landed. `maloss` is the
 experimental package-oriented YARA project; not production-ready.
 
 **Not applicable:** oss-fuzz is a fuzzing service for maintainers finding bugs in their own
@@ -207,7 +224,7 @@ code, not a supply-chain detector. It comes up in searches; ignore it here.
 
 ## Layering recipe
 
-<table><thead><tr><th width="70">Stage</th><th width="200">Tool</th><th width="110">Latency</th><th>Decision</th></tr></thead><tbody><tr><td>1</td><td>packj metadata scores, or your own heuristics</td><td>0.1–1s</td><td>Filter out popular, aged, well-maintained packages. Emit a 0–100 metadata risk score with a configurable threshold.</td></tr><tr><td>2</td><td>GuardDog (Semgrep + YARA + metadata)</td><td>0.5–2s</td><td>Any high-severity rule match escalates. Otherwise pass, or continue if the metadata score was high.</td></tr><tr><td>3</td><td>OpenSSF package-analysis (gVisor)</td><td>5–30s</td><td>Only on stage-2 hits. Pattern-match the trace against known IOCs: exfil to known C2, unexpected network, shell spawning.</td></tr><tr><td>4</td><td>LLM triage — see <a href="llm-triage.md">LLM triage</a></td><td>2–10s</td><td>Only on stage-3 findings plus the human queue. Structured output, evidence citations, never the only vote.</td></tr></tbody></table>
+<table><thead><tr><th width="70">Stage</th><th width="200">Tool</th><th width="110">Latency</th><th>Decision</th></tr></thead><tbody><tr><td>1</td><td>packj metadata scores, or your own heuristics</td><td>0.1–1s</td><td>Filter out popular, aged, well-maintained packages. Emit a 0–100 metadata risk score with a configurable threshold.</td></tr><tr><td>2</td><td>GuardDog (YARA source rules + metadata detectors)</td><td>0.5–2s</td><td>Any high-severity rule match escalates. Otherwise pass, or continue if the metadata score was high.</td></tr><tr><td>3</td><td>OpenSSF package-analysis (gVisor)</td><td>5–30s</td><td>Only on stage-2 hits. Pattern-match the trace against known IOCs: exfil to known C2, unexpected network, shell spawning.</td></tr><tr><td>4</td><td>LLM triage — see <a href="llm-triage.md">LLM triage</a></td><td>2–10s</td><td>Only on stage-3 findings plus the human queue. Structured output, evidence citations, never the only vote.</td></tr></tbody></table>
 
 **Cost per 1,000 packages, single machine:** stage 1 is 100–1,000s and effectively free;
 stage 2 is 500–2,000s (5–30 CPU-minutes, parallelizes linearly); stage 3 is 5,000–30,000s
@@ -219,8 +236,11 @@ offline and on demand.
 
 ## Verification notes and gaps
 
-* Exact rule counts for GuardDog and the Semgrep supply-chain rulesets weren't verified in
-  detail, read the repo rather than trusting a number here.
+* GuardDog's rule inventory above was read off the v3.1.0 tree. It changes with every release and
+  the IDs were renamed wholesale at 3.0, so list `guarddog/analyzer/sourcecode/` for the version
+  you actually run instead of trusting a count or a name here.
+* The ~40% FP / ~60% TP static figure quoted above predates 3.0 and measured the Semgrep-era
+  ruleset, which no longer exists. No published measurement of the YARA ruleset was found.
 * `pypi-scan` (IQT Labs) appears in older writeups; searches did not surface a current repo,
   so treat it as possibly deprecated.
 * VirusTotal comes up as an option but requires a third-party service, so it is not embeddable

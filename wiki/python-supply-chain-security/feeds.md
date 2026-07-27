@@ -185,14 +185,17 @@ Community-owned Python advisories, OSV-schema YAML named `PYSEC-YYYY-NNNN.yaml` 
 `vulns/`. Sourced from the NVD CVE feed with heuristics matching CVEs to PyPI packages, plus
 human curation.
 
+There is no PyPA API. The database *is* the git repo, so consume it as files:
+
 ```bash
-curl -X POST https://api.osv.dev/v1/query \
-  -d '{"version": "2.4.1", "package": {"name": "jinja2", "ecosystem": "PyPI"}}'
+git clone --depth 1 https://github.com/pypa/advisory-database
+ls advisory-database/vulns/jinja2/     # one PYSEC-YYYY-NNNN.yaml per advisory
 ```
 
 `pip-audit` uses this as a primary source. Repo:
-[`pypa/advisory-database`](https://github.com/pypa/advisory-database). Free. Usually already
-reachable through OSV, so query it directly only if you want the curation specifically.
+[`pypa/advisory-database`](https://github.com/pypa/advisory-database). Free. The same records reach
+you through OSV.dev, aggregated with everything else, so clone it directly only when you want PYSEC
+curation and provenance specifically.
 
 ## NVD / CVE
 
@@ -255,8 +258,10 @@ map directly to NVD CVEs.
 
 ## Prioritization: CVSS, EPSS, CWE
 
-* **CVSS**: 0–10 severity from exploitability and impact. v3.1 is current, and every feed
-  above carries it.
+* **CVSS**: 0–10 severity from exploitability and impact. **v4.0** has been current since
+  November 2023, but v3.1 is what most historical records carry, and GHSA now serves both (see the
+  `cvssV3`/`cvssV4` selection above). Parse both and prefer v4 where present, or you drop the
+  severity on advisories scored only under v4.
 * **EPSS**: a daily ML forecast (0–1) of exploitation in the wild within 30 days, published
   at [first.org/epss](https://www.first.org/epss). A better predictor of real risk than CVSS
   alone.

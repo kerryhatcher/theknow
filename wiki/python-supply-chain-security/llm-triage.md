@@ -19,7 +19,7 @@ unambiguous: an LLM is a **second-stage triager on heuristic hits**, not a scann
 | [arXiv:2309.02637](https://arxiv.org/abs/2309.02637) — Cerebro (fine-tuned BERT) | 306 new malicious PyPI packages and 196 npm found live (Mar–Oct 2023); 385 thank-you letters from registry teams | A small fine-tuned model on behavior sequences, not a frontier LLM |
 | **Endor Labs, GPT-3.5 on whole packages** | **1,874 artifacts queried, 34 flagged malicious: 13 true positives, 15 false positives, the remaining 6 obfuscated or proof-of-concept. 19 of the 34 judged correctly (56%)** | The counterexample. Simple obfuscation defeated it |
 | Socket (SocketAI) | 90.95% accuracy, best among their baselines | ~9% combined error; FPs on legitimate CLI tools that monitor keystrokes |
-| [arXiv:2409.15154](https://arxiv.org/abs/2409.15154) — RMCBench | Average refusal rate **28.71%** (text-to-code 40.36%, code-to-code 11.52%) | Models will happily process and generate malicious code when prompted |
+| [arXiv:2409.15154](https://arxiv.org/abs/2409.15154), RMCBench | Average refusal rate **28.71%** (text-to-code 40.36%, code-to-code 11.52%) | Low refusal rates are what make this stage usable at all: a model that won't read malware can't triage it. Says nothing about injection resistance |
 
 The Endor Labs finding is the one to sit with. GPT-3.5 given whole packages **described the
 malicious behavior correctly and still failed to flag it**, missing information stealers and
@@ -163,8 +163,11 @@ messages), and identifier names chosen to mislead. **ShadowCode**
 ([arXiv:2407.09164](https://arxiv.org/abs/2407.09164)) demonstrates that these attacks can be
 generated automatically, without human authorship, against code-analyzing LLMs.
 
-And per RMCBench, models refuse malicious-code requests only 28.71% of the time on average —
-11.52% in code-to-code scenarios, which is the scenario you're in.
+Don't reach for RMCBench's refusal rates as evidence here. They measure whether a model refuses to
+*write* malicious code on request, not whether it obeys instructions buried in code it was asked to
+analyze, and for this pipeline a low refusal rate is a prerequisite rather than a weakness: a model
+that refuses to read malware cannot triage it. ShadowCode is the citation that actually tests
+injection against code-analyzing models.
 
 **Mitigations, in order of value**
 
@@ -190,15 +193,25 @@ And per RMCBench, models refuse malicious-code requests only 28.71% of the time 
 
 **Confidence thresholds that work**
 
-* Above 0.85, accept the verdict
+* Above 0.85, accept a *malicious* verdict
 * 0.75–0.85, flag for human review
 * Below 0.75, re-analyze or escalate on heuristics alone
 
-**Ensemble rules**
+A clean verdict is never accepted on confidence alone; see the ensemble rules below for why.
 
-* MALICIOUS requires LLM and heuristic agreement.
-* SUSPICIOUS is the LLM catching something heuristics missed, surface it to a human, don't act.
-* CLEAN requires both to agree.
+**Ensemble rules**, in the tier vocabulary from
+[Detection quality](detection-quality.md#signal-tiers):
+
+* **MALICIOUS**: the LLM says malicious **and** a Tier 1, 1b, 2 or 3 heuristic fired. Act.
+* **SUSPICIOUS**: the LLM caught something the heuristics missed. Surface it to a human, don't act.
+* **CLEAN**: the LLM says clean **and** everything the heuristics flagged is Tier 4 or Tier 5 (or
+  Band C on [Red flags](red-flags.md#banded-checklist)). Close the finding and log why.
+* A Tier 1, 1b, 2 or 3 hit that the LLM calls clean goes to a human regardless of confidence.
+
+Note what that means for "both must agree": the LLM only ever sees packages the heuristics already
+flagged, so a clean heuristic verdict is never on the table at this stage. Agreement on CLEAN has to
+mean "nothing above Tier 4/5 fired", not "the heuristics also said clean", or every triaged package
+escalates and the stage buys you nothing.
 
 **Known false negatives from the literature.** Simple obfuscation (renamed functions, base64
 strings) causes misses, that's the Endor Labs result. Indirect calls across function
@@ -207,16 +220,16 @@ input look inert in static text.
 
 ## Running it locally
 
-The research baseline was Apple Silicon with 32GB of unified memory and no paid API in the loop, which also
-means no third party sees the code you're analyzing.
+The baseline assumed here is Apple Silicon with 32GB of unified memory and no paid API in the loop,
+which also means no third party sees the code you're analyzing.
 
 **Models**
 
 | Model | HumanEval | Fit |
 |---|---|---|
 | **Qwen2.5-Coder 7B** | 88.4% (84.1% HumanEval+) | The recommended default. 32K context, 10–14 tok/s on Apple Silicon, ~7GB resident at Q4_K_M. Fast enough for real-time triage (a 100–200 token analysis is 10–20s) |
-| **DeepSeek-Coder-V2-Lite** | 83.5% | Better generalization on complex patterns; the taint-slicing paper used DeepSeek. Q3/Q4_K_M puts it at 24–31GB resident — fills most of 32GB |
-| **Codestral** | ~80% | Middle ground, 15–20 tok/s, 18–20GB at Q4_K_M |
+| **DeepSeek-Coder-V2-Lite** | 83.5% | Better generalization on complex patterns; the taint-slicing paper used DeepSeek. 15.7B parameters with 2.4B active, so ~10GB at Q4_K_M and ~8.5GB at Q3_K_L: comfortable on 32GB. Slower per token than Qwen 7B, which is the actual reason it isn't the default |
+| **Codestral** | ~80% | Middle ground, 15–20 tok/s, ~13GB at Q4_K_M (22B parameters) |
 | **CodeLlama** | 67.8% | Avoid for this. Qwen 7B outperforms CodeLlama 70B here |
 
 **Runtimes**
@@ -246,7 +259,8 @@ Q3_K_M only if speed dominates and ~85% accuracy is acceptable.
   variables or spawning a shell.
 * **JFrog Xray**: a numeric "maliciousness score"; very high auto-flags, moderate routes to a
   human researcher. Explicitly tuned against alert fatigue.
-* **Datadog**: GuardDog stays deterministic (Semgrep and YARA), with the Supply Chain Firewall
+* **Datadog**: GuardDog stays deterministic (YARA source rules plus Python metadata detectors;
+  Semgrep was dropped in 3.0), with the Supply Chain Firewall
   doing enforcement. No LLM in the detection path.
 
 The pattern across all of them: the model is a scoring or triage component inside a

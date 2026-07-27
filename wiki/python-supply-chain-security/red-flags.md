@@ -13,8 +13,12 @@ their own page: [Name and distribution attacks](name-attacks.md).
 
 ## 1. Install-time code execution
 
-The highest-severity surface, because it fires on `pip install` with no further user action
-and before the package is even in `site-packages`.
+The highest-severity surface, because it needs no deliberate user action beyond installing the
+package and then using the environment. The trigger differs by mechanism, and that decides what a
+dynamic gate has to do: 1.1, 1.2 and 1.5 run during `pip install` itself, before the package
+reaches `site-packages`; 1.3 runs on the first `import`; 1.4 runs from `site-packages` on the next
+interpreter start. A sandbox that only installs, and never starts a fresh interpreter and imports,
+misses two of the five.
 
 ### 1.1 `setup.py` command overwriting
 
@@ -35,8 +39,12 @@ setup(name="innocent-pkg", cmdclass={"install": InstallCommand})
 `subprocess`, `socket`, `os`, or `ctypes`; logic split across `setup.py` and `setup.cfg`;
 code at module scope rather than deferred into functions.
 
-**Detects it:** GuardDog's `cmd-overwrite` rule; a Semgrep pattern for a custom install
-command containing subprocess or network calls; by hand, `grep -r "cmdclass.*install"`.
+**Detects it:** GuardDog's `threat-setup-*` YARA rules (`threat-setup-network-in-install`,
+`threat-setup-suspicious-imports`, `threat-setup-import-aliasing`) cover install-script shapes,
+but none of them keys on `cmdclass` itself, so pair them with your own check: parse `setup.py`,
+find the `cmdclass` argument, and look at whether the class it names reaches subprocess or the
+network. A Semgrep pattern for a custom install command containing subprocess or network calls
+does the same job; by hand, `grep -r "cmdclass.*install"`.
 
 **Real case:** a macOS-targeted package documented by Datadog Security Labs used a custom
 `InstallCommand` to run XOR-encrypted payloads, keyed on a SHA3-512 hash of target file paths.
@@ -51,12 +59,6 @@ requires = ["setuptools", "wheel", "malicious-builder"]
 build-backend = "malicious_builder.build"   # attacker-controlled module
 ```
 
-```ini
-# setup.cfg
-[global]
-command_packages = attacker_pkg
-```
-
 Build hooks run *before* the package is built, with full filesystem and network access.
 
 Note what makes the example work. A PEP 517 backend is imported from the build environment, which
@@ -67,8 +69,23 @@ entry in `requires` that gives the attacker their code.
 
 **Red flags:** a `build-backend` that isn't `setuptools`, `wheel`, or a well-known
 third-party builder; an obscure single-use distribution in `build-system.requires`;
-`backend-path` pointing into the source tree; `command_packages` or script paths in `setup.cfg`
-sections like `egg_info`, `bdist_wheel`, `install_egg_info`.
+`backend-path` pointing into the source tree.
+
+One `setup.cfg` entry gets cited as an equivalent vector and shouldn't be:
+
+```ini
+# setup.cfg
+[global]
+command_packages = attacker_pkg
+```
+
+`command_packages` is a legacy distutils command-lookup setting, not a PEP 517 hook. Current
+setuptools parses it, so it does show up in `Distribution.get_command_packages()`, but it resolves
+the standard build commands (`build`, `build_py`, `egg_info`, `sdist`, `bdist_wheel`, `dist_info`,
+`install`) from its own `cmdclass` and entry points first, so a package named here is never
+imported during an ordinary wheel build. It only reaches code for a non-standard command name
+invoked explicitly as `python setup.py <cmd>`. Score it as a weak metadata oddity, and confirm the
+behavior against the setuptools version you actually build with before relying on either reading.
 
 **Detects it:** parse `pyproject.toml` and `setup.cfg`, compare `build-backend` against a
 known-good list, and treat any distribution in `build-system.requires` that is not a recognized
@@ -92,8 +109,9 @@ inside a function.
 
 {% hint style="info" %}
 GuardDog historically concentrated its scanning on `setup.py` specifically to hold false
-positives down, which means `__init__.py` and lazily imported submodules are the known
-blind spot attackers aim at. Don't inherit that limitation.
+positives down, which is why `__init__.py` and lazily imported submodules became the blind spot
+attackers aim at. 3.x scans far more file types, but don't inherit the older limitation in a
+detector of your own.
 {% endhint %}
 
 ### 1.4 `.pth` file auto-execution
@@ -108,21 +126,26 @@ import malicious_hook; malicious_hook.run()
 
 A handful of legitimate packages ship one, and they are packages you almost certainly have
 installed: setuptools ships `distutils-precedence.pth`, whose body runs code including an
-`__import__` call; coverage and pytest-cov ship subprocess-hook `.pth` files; and every PEP 660
-editable install (`pip install -e`) generates an `__editable__.<name>-<ver>.pth` that imports and
-calls a finder. So the presence of a `.pth` is not the signal. What it contains is. A rule that
-fires on "`.pth` exists" alerts on essentially every virtualenv, which is the fastest way to get
-your detector switched off.
+`__import__` call; coverage ships `a1_coverage.pth`, whose body is an `import sys; exec(...)` call
+guarded on the `COVERAGE_PROCESS_START` environment variable (pytest-cov ships none of its own any
+more, the subprocess hook moved into coverage); and an editable install (`pip install -e`) may
+generate `__editable__.<name>-<ver>.pth`, holding either a bare path line or a finder import
+depending on the build backend and the project layout. So the presence of a `.pth` is not the
+signal, and neither is "the body executes something", because coverage's body does exactly that. A
+rule that fires on "`.pth` exists" alerts on essentially every virtualenv, which is the fastest
+way to get your detector switched off.
 
 The March 2026 LiteLLM compromise shipped
 `litellm_init.pth`, which decoded and executed base64-obfuscated credential-stealing code on
 every Python startup, the mechanism that got that campaign named the "Hades" PyPI attack.
 
-**Red flags:** a `.pth` shipped inside an sdist or wheel whose import line is not one of the
-known-good cases above; obfuscated or encoded content in the body; a decode or exec call
-(`base64`, `exec`, `eval`, network access); a `.pth` importing a module the package doesn't
+**Red flags:** a `.pth` shipped inside an sdist or wheel whose filename *and* body don't match one
+of the known-good cases above; obfuscated or encoded content in the body; a decode call (`base64`,
+`bytes.fromhex`) or network access in the body; a `.pth` importing a module the package doesn't
 contain; more than one `.pth` in a single package. A `.pth` named after the package is worth a
-look, but only once the known-good names are excluded.
+look, but only once the known-good set is excluded. Pin that set by exact filename and body hash:
+an allowlist entry reading `coverage.pth` matches nothing, because the file coverage actually ships
+is `a1_coverage.pth`, and its body calls `exec`.
 
 **Detects it:** audit the package structure before install; decode any base64 in the `.pth`;
 post-install, diff `site-packages` for unexpected `.pth` files.
@@ -162,9 +185,13 @@ Execution sinks: `exec`, `eval`, `compile(...)` then `exec`, and
 100+ lines; nested encodings (`base64(hex(...))`); `exec` fed directly from a `requests`
 response.
 
-**Detects it:** GuardDog's `exec-base64` rule (Semgrep taint tracking). A minimal loadable
-Semgrep rule, in taint mode so it catches the two-statement form above and not just a decode
-written inline inside the `exec(...)` call:
+**Detects it:** GuardDog's YARA rule `threat-runtime-obfuscation-base64exec`, which fires when a
+base64 decoder and a bare `exec`/`eval` both appear anywhere in the same file. That is regex
+co-occurrence, not dataflow: it will fire on a benign file that happens to contain both, and it
+says nothing about whether the decoded bytes are what gets executed. What ties the decode to the
+sink is a taint rule, and Semgrep can express one where YARA cannot. This is a minimal loadable
+version, in taint mode so it catches the two-statement form above as well as a decode written
+inline inside the `exec(...)` call:
 
 ```yaml
 rules:
@@ -244,21 +271,22 @@ string concatenation adjacent to `__import__`, `getattr`, or `importlib.import_m
 ### 2.4 Unicode and homoglyphs
 
 ```python
-suBprocess              # Cyrillic В (U+0412) standing in for Latin B: a distinct, valid identifier
+subprоcess              # Cyrillic о (U+043E) for the Latin o: pixel-identical, a distinct identifier
 payload = "sub​process"  # zero-width space (U+200B) inside a string, defeats naive grep
 ```
 
 Note where each one is usable. Python applies NFKC to identifiers, and Cyrillic does not fold to
-Latin, so the Cyrillic-B spelling stays a distinct identifier rather than colliding with the
-all-Latin one: it reads as `subprocess` to a human and matches no rule looking for that literal
-string. A zero-width space cannot appear in an identifier at all (U+200B is not in `XID_Continue`,
+Latin, so that spelling stays a distinct identifier rather than colliding with the all-Latin one:
+in most fonts it renders identically to `subprocess`, and it matches no rule looking for that
+literal string. A zero-width space cannot appear in an identifier at all (U+200B is not in `XID_Continue`,
 so it is a `SyntaxError`); it hides in string literals, comments, and package or display names,
 where it breaks string matching.
 
 **Red flags:** identifiers mixing Unicode scripts; combining diacriticals; odd encoding
 declarations or BOMs; comments in an unexpected script.
 
-**Detects it:** GuardDog's `unicode` rule; check for non-ASCII in identifiers; fold names to
+**Detects it:** GuardDog's `threat-runtime-obfuscation-unicode` rule; check for non-ASCII in
+identifiers; fold names to
 a Unicode confusable skeleton (see [name attacks](name-attacks.md#homoglyph-skeletons)).
 
 **Real case:** `onyxproxy` (Phylum) used Cyrillic and Greek lookalikes so name-matching rules
@@ -295,7 +323,8 @@ ssh_key = open(os.path.expanduser("~/.ssh/id_rsa")).read()
 | `.env`, `.env.local`; browser profile and cookie dirs | `STRIPE_SECRET_KEY`, `DATABASE_URL` |
 | `/etc/passwd`, `/proc/`, EC2 IMDS at `169.254.169.254` | |
 
-**Detects it:** GuardDog's `exfiltrate-sensitive-data` rule; Semgrep taint tracking from
+**Detects it:** GuardDog's `threat-network-exfiltration` and `threat-runtime-environment-read`
+rules; Semgrep taint tracking from
 credential paths or `os.getenv` to a network call; grep for `expanduser`/`os.environ`
 co-occurring with `requests`/`urllib`/`socket`.
 
@@ -309,7 +338,7 @@ calls), and Slack/Discord webhooks, then posted them encrypted to
 **Red flags:** raw IPs, especially non-RFC1918; Pastebin, Discord webhooks, or Telegram as
 dead-drops; newly registered domains and throwaway TLDs (`.xyz`, `.top`); URL shorteners;
 hardcoded endpoints whose naming gives the game away. GuardDog covers part of this with
-`shady-links`.
+`threat-network-outbound-shady-links`.
 
 ### 3.3 Subprocess and OS command execution
 
@@ -329,7 +358,8 @@ if os.name == "nt":
 redirected to `DEVNULL`; `CREATE_NO_WINDOW`; command strings assembled from environment
 variables or network responses.
 
-**Detects it:** GuardDog's `code-execution` and `silent-process-execution` rules; YARA on
+**Detects it:** GuardDog's `threat-process-download-exec` and `threat-process-spawn-silent`
+rules; YARA on
 subprocess + `DEVNULL` or subprocess + `CREATE_NO_WINDOW`.
 
 ### 3.4 `ctypes` and low-level access
@@ -352,14 +382,18 @@ for _ in range(multiprocessing.cpu_count()):
 
 **Red flags:** hashing or crypto in tight loops; threads spawned across `cpu_count()`; GPU
 access via `cupy`/`pycuda`; `stratum+tcp://` or pool names in config or env. GuardDog has a
-`cryptominer` rule. Cheapest reliable detection is runtime: sustained CPU after import.
+`threat-process-cryptomining` rule. Cheapest reliable detection is runtime: sustained CPU after
+import.
 
 ### 3.6 Other capability signals
 
-GuardDog also carries rules for `clipboard-access`, `screenshot`, `dll-hijacking`,
-`download-executable`, `steganography`, and `pyarmor` (commercial obfuscator use). Each is a
-capability; per its own design philosophy, a capability only matters alongside a threat
-indicator in the same file.
+GuardDog also carries rules for clipboard access (`capability-runtime-clipboard`), screen capture
+(`threat-runtime-screencapture`), DLL injection (`threat-process-injection-dll`),
+download-and-execute (`threat-process-download-exec`), steganography
+(`threat-runtime-obfuscation-steganography`), and commercial obfuscator use
+(`threat-runtime-obfuscation-pyarmor`). Its rule names carry the distinction explicitly: a
+`capability-*` match is a capability, not a finding, so read it alongside the `threat-*` matches
+rather than alerting on it.
 
 ## 4. Metadata and publishing signals
 
@@ -434,12 +468,14 @@ and credential access, weight 3). Score with the tiers; triage with the bands.
 
 * [ ] `exec`/`eval` fed by base64, zlib, marshal, or hex
 * [ ] Custom install command running subprocess or network calls
-* [ ] A `.pth` in an sdist or wheel whose import line is not on the known-good list
-      (setuptools, coverage, `__editable__.*`) and whose body decodes or executes data
+* [ ] A `.pth` in an sdist or wheel whose body decodes or executes data **and** whose exact
+      filename and body hash are not in a pinned known-good set (`distutils-precedence.pth`,
+      `a1_coverage.pth`, `__editable__.*`). Matching on names alone breaks here: coverage's
+      shipped hook executes code too
 * [ ] Non-standard `build-backend`, or an unrecognized distribution in `build-system.requires`
 * [ ] Module-level network request to a suspicious domain or raw IP
-* [ ] Levenshtein distance 1 to a top-5,000 package, or distance 2 with both edits
-      keyboard-adjacent
+* [ ] Levenshtein distance 1 to a top-5,000 package (or distance 2 with both edits
+      keyboard-adjacent) **plus** a corroborating metadata or code signal
 * [ ] Credential source (`~/.ssh`, `~/.aws`, `AWS_*`) reaching a network sink
 
 **Band B, medium confidence, some FPs in data-science packages** (mostly scheme Tier 2 and Tier 4)
@@ -452,6 +488,9 @@ and credential access, weight 3). Score with the tiers; triage with the bands.
 * [ ] Under ~50 total downloads
 * [ ] Missing or broken repository link
 * [ ] sdist/wheel file-count mismatch
+* [ ] Levenshtein distance 1 to a top-5,000 package with nothing corroborating it. Ordinary
+      sibling names sit at distance 1 (the stdlib `urllib` against the package `urllib3`, `attr`
+      against `attrs`), so distance on its own is a candidate list, never a block
 
 **Band C, needs review or more context** (mostly scheme Tier 4 and Tier 5)
 
@@ -462,7 +501,7 @@ and credential access, weight 3). Score with the tiers; triage with the bands.
 * [ ] Maintainer account under 3 months old
 * [ ] Version anomalies (`0.0.0`, `99.99.99`)
 * [ ] Levenshtein distance 2 to a top-5,000 package without keyboard adjacency, which sweeps in
-      ordinary neighbours like `urllib`/`urllib3`
+      forks, plural forms, and `-py`/`-python` variants of legitimate packages
 * [ ] A `.pth` present at all, once the known-good names are excluded
 
 ## Patterns that look malicious and aren't

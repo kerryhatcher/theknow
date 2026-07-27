@@ -28,7 +28,7 @@ is the actual engineering problem, and everything hard on this wiki is about tha
 |---|---|---|
 | Packages on PyPI | 717,280+ | PyPI, 2025 |
 | Releases per month | ~500,000 | Aggregate PyPI upload volume |
-| Benign:malicious **package-count** ratio | ~70:1 | Estimated from ~10k known-malicious against ~707k benign. Not the per-release prior a scanner faces, which is nearer 1 in 10,000. See [Detection quality](detection-quality.md#the-false-positive-crisis) |
+| Benign:malicious **package-count** ratio | ~70:1 | Estimated from ~10k known-malicious against ~707k benign. Not the per-release prior a scanner faces, which is nearer 1 in 6,000. See [Detection quality](detection-quality.md#the-false-positive-crisis) |
 | Known-malicious packages catalogued (OpenSSF) | 16,272+ (2025), growing | [`ossf/malicious-packages`](https://github.com/ossf/malicious-packages) |
 | Known-malicious with source archived (DataDog) | 1,965 PyPI, 3,611 npm | [DataDog dataset](https://github.com/DataDog/malicious-software-packages-dataset) |
 | Malicious packages that reach a user project | 74.81% | [ASE 2023 empirical study](https://arxiv.org/abs/2309.11021) |
@@ -46,7 +46,7 @@ seriously is not a design.
 Every credible tool and paper converges on the same shape: cheap-to-expensive stages, each
 one only running on what the previous stage flagged.
 
-<table><thead><tr><th width="80">Stage</th><th width="150">What</th><th width="110">Latency/pkg</th><th>Notes</th></tr></thead><tbody><tr><td>1</td><td>Metadata heuristics</td><td>0.1–1s</td><td>Age, release count, maintainer history, downloads, repo link, name similarity. Cheapest, weakest.</td></tr><tr><td>2</td><td>Static / AST analysis</td><td>0.5–2s</td><td>Semgrep-style rules: install hooks, decode-then-<code>exec</code>, credential-read-to-network taint. Reuse GuardDog here.</td></tr><tr><td>3</td><td>Dynamic sandbox</td><td>5–30s</td><td>Install and import under gVisor, record syscalls/network/file access. Catches runtime-only behavior.</td></tr><tr><td>4</td><td>LLM triage</td><td>2–10s per decision</td><td>Intent judgement on the survivors, structured output, human in the loop.</td></tr></tbody></table>
+<table><thead><tr><th width="80">Stage</th><th width="150">What</th><th width="110">Latency/pkg</th><th>Notes</th></tr></thead><tbody><tr><td>1</td><td>Metadata heuristics</td><td>0.1–1s</td><td>Age, release count, maintainer history, downloads, repo link, name similarity. Cheapest, weakest.</td></tr><tr><td>2</td><td>Static / AST analysis</td><td>0.5–2s</td><td>Rule-based scanning: install hooks, decode-then-<code>exec</code>, credential-read-to-network taint. Reuse GuardDog here (YARA rules plus metadata detectors), and add Semgrep taint rules of your own where you need dataflow.</td></tr><tr><td>3</td><td>Dynamic sandbox</td><td>5–30s</td><td>Install and import under gVisor, record syscalls/network/file access. Catches runtime-only behavior.</td></tr><tr><td>4</td><td>LLM triage</td><td>2–10s per decision</td><td>Intent judgement on the survivors, structured output, human in the loop.</td></tr></tbody></table>
 
 Cost per 1,000 packages, single machine: stage 1 is negligible and parallelizes; stage 2 is
 roughly 5–30 CPU-minutes; stage 3 is 2–8 hours and is the bottleneck; stage 4 you run on
@@ -66,6 +66,7 @@ The scoring scheme, in full, is on [Detection quality](detection-quality.md). Th
 version:
 
 * Tier 1, install-time execution: weight 5
+* Tier 1b, code in the artifact that is absent from the source repo at the release tag: weight 5
 * Tier 2, obfuscation: weight 3
 * Tier 3, network or credential access: weight 3 (1 inside an SDK that legitimately needs credentials)
 * Tier 4, metadata oddities: weight 1
@@ -73,17 +74,21 @@ version:
 
 0–2 points is informational, 3–5 needs human review, 6+ blocks. Each tier contributes its
 weight **at most once**, however many signals fire inside it, so 6+ points is only reachable by
-combining **two different tiers**: corroboration falls out of the arithmetic instead of being a
-rule you enforce on the side. Tier 1 + Tier 3 (an install hook that exfiltrates credentials) is
-the canonical confirmed-malicious pair.
+combining **two different tiers**: corroboration mostly falls out of the arithmetic instead of
+being a rule you enforce on the side. The one part you do enforce separately: metadata alone
+(Tier 4) never carries a score into HIGH, because zero downloads and a new account describe every
+legitimate first release. Tier 1 + Tier 3 (an install hook that exfiltrates credentials) is the
+canonical confirmed-malicious pair.
 
 ## Four things that actually move the needle
 
 1. **Differential analysis beats pattern matching.** Comparing the source repo against the
-   published artifact, the LastPyMile approach, reports <1% FP at ~95% detection, because
-   it shrinks what you analyze down to the diff. A clean repo with a dirty wheel is a
-   near-certain post-publish compromise, and that's exactly the shape of the two biggest
-   2026 incidents. See [Name and distribution attacks](name-attacks.md#repo-vs-artifact-divergence).
+   published artifact, the LastPyMile approach, shrinks what you analyze down to the injected code,
+   and that is what holds the alert volume down: on the paper's own validation set a scanner's
+   alerts on malicious artifacts fell by one to two orders of magnitude, with none at all on the
+   benign artifacts. A clean repo with a dirty wheel is a near-certain post-publish compromise, and
+   that's exactly the shape of the two biggest 2026 incidents. See
+   [Name and distribution attacks](name-attacks.md#repo-vs-artifact-divergence).
 2. **Scan the resolved tree, not the declared one.** Expand to every transitive package
    first, then run name checks and CVE lookups over that set. A lockfile reproduces a bad
    resolution exactly as faithfully as a good one.
