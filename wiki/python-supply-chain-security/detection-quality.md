@@ -47,7 +47,7 @@ relative to production. See [Research and datasets](research-and-datasets.md#cla
 | Approach | FP | TP / recall | Note |
 |---|---|---|---|
 | PyPI native checks ([arXiv:2209.13288](https://arxiv.org/abs/2209.13288)) | 78% | ~20% | 15–97% range across the tools tested |
-| GuardDog, static only | ~40% | ~60% | Bypassed by string concat + dynamic import. Measured on the pre-3.0 Semgrep ruleset, which 3.x replaced with YARA |
+| GuardDog v2 Semgrep engine ([arXiv:2409.09356](https://arxiv.org/abs/2409.09356)) | 12.7-24.2% on obfuscation-heavy benign corpora | recall 0.94, precision 0.89, F1 0.91 | The often-quoted "~40% FP / ~60% TP" for GuardDog is unsourced; these are the published figures. No v3 YARA measurement exists. Bypassed by string concat + dynamic import |
 | PYPILINE (LLM + static) | 3% (96.7% precision) | 99.6% recall (0.4% FN) | 8-category taxonomy, structured JSON output |
 | PyFEX (forced execution) | n/a | n/a | 212 previously unknown malicious packages found in live deployment, together accounting for 91,648+ downloads. Found malware the rules missed |
 | LastPyMile (source vs artifact) | n/a | n/a | Not a benchmarked pair. The paper validates on 3 malicious plus 3 benign artifacts: it detected all the malicious ones, cut a scanner's alerts on the malicious artifacts by one to two orders of magnitude (489 to 12 in one case), and produced zero alerts on the benign ones |

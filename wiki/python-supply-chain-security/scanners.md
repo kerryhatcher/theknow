@@ -20,8 +20,9 @@ behavior, and skip the rest unless you have a specific reason.
 ## GuardDog (DataDog)
 
 **Repo:** [DataDog/guarddog](https://github.com/DataDog/guarddog) · Python · Apache-2.0 ·
-~1,165★ · v3.1.0 (July 2026), actively maintained. Releases land every few weeks, so read the
-repo for the current version rather than trusting this line.
+~1,165★ · v3.1.0 (July 2026), actively maintained. **Everything in this section was verified
+against v3.1.0 (tagged 2026-07-08).** Releases land every few weeks and the 3.0 rewrite renamed
+every rule, so confirm against the version you pin rather than trusting this page.
 
 The default choice for the static layer, and the one tool here worth reusing rather than
 reinventing: it is the detector behind the DataDog malicious-package dataset, and it is what the
@@ -30,10 +31,15 @@ published tool-vs-tool comparisons benchmark against
 
 **Detection layers**
 
-1. **Metadata heuristics**: Python detector modules over registry metadata: author, version
-   history, release patterns, domain resurrection (maintainer email domain re-registered after
-   release), missing info (no description, version `0.0.0`), typosquatting (Levenshtein ≤1
-   against the top 5,000 packages, or exactly two characters swapped).
+1. **Metadata heuristics**: Python detector modules over registry metadata. At v3.1.0 the seven
+   PyPI detectors are `typosquatting` (Levenshtein ≤1 against the top 5,000 PyPI packages, or
+   exactly two characters swapped), `potentially_compromised_email_domain` and
+   `unclaimed_maintainer_email_domain` (a maintainer domain that expired or was never claimed, so
+   anyone can re-register it and trigger a password reset), `deceptive_author`, `bundled_binary`,
+   `metadata_mismatch`, and `repository_integrity_mismatch` (declared repo against packaged
+   source). Detector *names* survived the 3.0 rewrite even though rule IDs did not. Counts differ
+   per ecosystem: npm 8, RubyGems 3, Go 1, and none at all for GitHub Actions or editor
+   extensions. The older `empty_information` detector (no description, version `0.0.0`) is gone.
 2. **Source code analysis**: YARA rules in `guarddog/analyzer/sourcecode/`, run in the main
    process behind a sandbox (network blocked, filesystem restricted to the extracted files).
    Semgrep was the engine through 2.x and was **removed in 3.0**: `yara-python` is the only rule
@@ -58,9 +64,15 @@ scans: PyPI, npm, Go modules, RubyGems, GitHub Actions, VSCode extensions.
 Names change between major versions, so pin the rule IDs you depend on to a GuardDog version and
 list the directory to confirm them.
 
-**Design philosophy, worth internalizing:** *"Capability + threat together indicates actual
-risk."* It deliberately avoids flagging suspicious patterns in isolation, which is the same
-corroboration principle described on [Detection quality](detection-quality.md).
+**Design philosophy, worth internalizing** (new in v3.0): *"Capability + Threat together
+indicates actual risk (code that can and will do something malicious)"*, from the project README.
+The correlation is asymmetric in practice, and the asymmetry is the useful part: a `capability-*`
+match on its own never raises a risk, while a `threat-*` match raises one alone when its category
+is `runtime`, `metadata`, `setup`, or `npm`, or when its specificity is high. That covers most of
+the threat rules; the rest need a capability alongside them. Pairing is not restricted to a single
+file either: a cross-file pair still forms, one severity level lower, and a cross-category pair two
+lower. Same corroboration principle as [Detection quality](detection-quality.md), applied less
+strictly than the slogan implies.
 
 **CLI**
 
@@ -73,8 +85,10 @@ guarddog pypi verify requirements.txt                  # audit a requirements fi
 guarddog pypi verify --output-format=sarif requirements.txt
 ```
 
-Output: columnar text, JSON, or SARIF for CI. It sandboxes its own analysis using Landlock on
-Linux and Seatbelt on macOS.
+Output: columnar text or JSON for `scan`. **SARIF is implemented for `verify` only**, so
+`scan --output-format=sarif` fails: plan CI integration around `verify`. Since v3.0 it sandboxes
+its own extraction and scanning by default via the `nono-py` library (Landlock on Linux, Seatbelt
+on macOS), and a scan fails if the sandbox is unavailable unless `--no-sandbox` is passed.
 
 **Latency:** 0.5–2s per package.
 
@@ -82,8 +96,12 @@ Linux and Seatbelt on macOS.
 main FP source. Historically it concentrates on `setup.py` to keep FPs down, so malware in
 `__init__.py` or a lazily imported submodule can slip past. Its hardcoded patterns have a
 [published bypass](https://medium.com/@heyyoad/how-we-evaded-datadogs-malicious-package-detection-lessons-for-better-security-e8c9b185f97e)
-using f-string-assembled `__import__` calls. Static-only measurements put it around 40% FP /
-60% TP, though those measurements predate the 3.0 rewrite of the ruleset.
+using f-string-assembled `__import__` calls. On accuracy, treat the widely repeated "~40% false
+positives" claim as unsourced: it traces to no paper or upstream document. The only published
+measurement is an academic benchmark of the pre-3.0 Semgrep engine, reporting precision 0.89,
+recall 0.94, and F1 0.91 on PyPI, with false-positive rates of 12.7% to 24.2% on deliberately
+obfuscation-heavy benign corpora ([arXiv:2409.09356](https://arxiv.org/abs/2409.09356)). Nobody
+has published a measurement of the v3 YARA engine.
 
 Datadog also ships a **Supply Chain Firewall** that blocks installation of packages GuardDog
 flags, if you want enforcement rather than reporting.
@@ -239,8 +257,9 @@ offline and on demand.
 * GuardDog's rule inventory above was read off the v3.1.0 tree. It changes with every release and
   the IDs were renamed wholesale at 3.0, so list `guarddog/analyzer/sourcecode/` for the version
   you actually run instead of trusting a count or a name here.
-* The ~40% FP / ~60% TP static figure quoted above predates 3.0 and measured the Semgrep-era
-  ruleset, which no longer exists. No published measurement of the YARA ruleset was found.
+* The published accuracy figures above measured the Semgrep-era ruleset, which no longer exists.
+  No measurement of the v3 YARA ruleset was found, and the "~40% FP" figure in circulation has no
+  traceable source at all.
 * `pypi-scan` (IQT Labs) appears in older writeups; searches did not surface a current repo,
   so treat it as possibly deprecated.
 * VirusTotal comes up as an option but requires a third-party service, so it is not embeddable
@@ -249,7 +268,7 @@ offline and on demand.
 
 ## Sources
 
-* [GuardDog](https://github.com/DataDog/guarddog) · [GuardDog announcement](https://securitylabs.datadoghq.com/articles/guarddog-identify-malicious-pypi-packages/) · [GuardDog 2.0](https://securitylabs.datadoghq.com/articles/guarddog-2-0-release/) · [Supply Chain Firewall](https://securitylabs.datadoghq.com/articles/introducing-supply-chain-firewall/)
+* [GuardDog](https://github.com/DataDog/guarddog) · [GuardDog announcement](https://securitylabs.datadoghq.com/articles/guarddog-identify-malicious-pypi-packages/) · [GuardDog 2.0](https://securitylabs.datadoghq.com/articles/guarddog-2-0-release/) · [GuardDog 3.0](https://securitylabs.datadoghq.com/articles/guarddog-3-0-release/) · [Supply Chain Firewall](https://securitylabs.datadoghq.com/articles/introducing-supply-chain-firewall/)
 * [packj](https://github.com/ossillate-inc/packj)
 * [OpenSSF package-analysis](https://github.com/ossf/package-analysis) · [BleepingComputer coverage](https://www.bleepingcomputer.com/news/security/open-source-package-analysis-tool-finds-malicious-npm-pypi-packages/)
 * [pip-audit](https://github.com/pypa/pip-audit) · [OSV-Scanner](https://github.com/google/osv-scanner) · [Bandit](https://github.com/PyCQA/bandit)
