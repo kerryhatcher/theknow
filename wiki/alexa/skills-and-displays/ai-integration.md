@@ -12,32 +12,53 @@ Read the budget section first, because it eliminates most designs before you wri
 ## The response budget
 
 Amazon's own [Progressive Response docs](https://developer.amazon.com/en-US/docs/alexa/custom-skills/send-the-user-a-progressive-response.html)
-state it plainly: "the skill has approximately eight seconds to return a full response." That
-is the only documented number in this whole flow, and it is a soft "approximately," not a
-published SLA with a hard millisecond boundary. Miss it and Alexa either speaks a generic error
-or goes silent, depending on device firmware, and your CloudWatch logs fill with people's
-confused retries rather than a clean `SKILL_RESPONSE_TIMEOUT_EXCEPTION`.
+state it plainly: "the skill has approximately eight seconds to return a full response." AWS's
+own reference architecture for Alexa skills is explicit about where that clock sits: ASR, NLU,
+and TTS conversion are handled by "the Alexa Service... on behalf of your Alexa Skill," a step
+that happens before your Lambda function is ever invoked, and separately, "the Alexa Service
+timeout is eight seconds" for the Lambda call itself
+([AWS Well-Architected, Serverless Applications Lens](https://docs.aws.amazon.com/wellarchitected/latest/serverless-applications-lens/alexa-skills.html)).
+So the eight seconds is not a budget you enter partway spent. It is the time your endpoint has
+after Alexa has already finished listening, recognizing speech, and resolving an intent, and
+after it has sent you the request. Miss it and Alexa either speaks a generic error or goes
+silent, depending on device firmware, and your CloudWatch logs fill with people's confused
+retries rather than a clean `SKILL_RESPONSE_TIMEOUT_EXCEPTION`.
 
-The number that actually matters is smaller than eight, because ASR and NLU run before your
-Lambda even wakes up. Amazon doesn't publish that pre-invocation latency, so treat the following
-table as an engineering estimate, not a spec:
+That means ASR and NLU cost real time, but it's time the user feels before your endpoint is ever
+called, not time subtracted from your eight seconds. Keep the two ideas separate: an **endpoint
+response budget** the docs actually constrain, and a **user-perceived latency** figure that
+includes everything the person experiences from the moment they stop talking to the moment they
+hear an answer. Only the first one governs whether your Lambda times out.
+
+**Endpoint response budget.** Everything below happens after invocation, inside the documented
+eight seconds. Amazon doesn't publish per-stage figures for any of it, so treat this table as an
+engineering estimate, not a spec:
 
 | Stage | Time | Source |
 |---|---|---|
-| ASR + NLU (speech to intent, cloud-side) | 1-2 s | Estimate, unverified. Not published by Amazon. |
 | Lambda cold start (Rust, ARM64, `provided.al2023`) | 50-150 ms cold, ~0 ms warm | Estimate, from Rust cold-start behavior generally; Amazon does not publish per-language cold-start figures. |
 | Your data fetch (DB, API, cache) | 50-500 ms | Depends entirely on your backend; budget it explicitly. |
 | The model call | 800 ms - 2 s (small model, short prompt) | Estimate; see latency strategies below. |
 | Response serialization + directive assembly | <10 ms | Negligible if you're building `serde_json::json!` literals, not templating a large document per request. |
 | **Total documented budget** | **~8 s** | [Progressive Response docs](https://developer.amazon.com/en-US/docs/alexa/custom-skills/send-the-user-a-progressive-response.html) |
-| **Sum of the rows above** | **~1.9-4.7 s consumed** | Adding the estimate rows together, low end to low end and high end to high end. |
-| **Realistic remaining budget for your code + the model call** | **~3.3-6.1 s** | 8 s minus the row above. Treat the low end as your design target; the high end assumes every stage lands at its best case simultaneously, which real traffic rarely does. |
+| **Sum of the rows above** | **~0.9-2.65 s consumed** | Adding the estimate rows together, low end to low end and high end to high end. |
+| **Realistic remaining budget for your code + the model call** | **~5.35-7.1 s** | 8 s minus the row above. Treat the low end as your design target; the high end assumes every stage lands at its best case simultaneously, which real traffic rarely does. |
+
+**User-perceived latency.** This is what the person standing in front of the device actually
+waits through, and it's the number to quote if someone asks "how long until they hear an
+answer." It is *not* what your Lambda timeout is measured against.
+
+| Stage | Time | Source |
+|---|---|---|
+| ASR + NLU (speech to intent, cloud-side, before your endpoint is invoked) | 1-2 s | Estimate, unverified. Not published by Amazon; confirmed only to occur pre-invocation. |
+| Endpoint response budget (table above) | ~0.9-2.65 s low end | Same estimate rows, reused. |
+| Device-side audio round trip (TTS playback start, network) | Not quantified here | Varies by device and network; not part of either documented timeout. |
 
 {% hint style="warning" %}
-Only the 8-second figure is a documented Amazon number. Every other row is an engineering
-estimate based on how these systems generally behave. Measure your own ASR/NLU overhead and cold
-start with real CloudWatch traces before you commit a design to a specific number inside that
-3.3-6.1 s range.
+Only the 8-second figure is a documented Amazon number, and it starts at invocation, not at the
+moment the user stops speaking. Every other row in both tables is an engineering estimate.
+Measure your own ASR/NLU overhead and cold start with real CloudWatch traces before you commit a
+design to a specific number inside the 5.35-7.1 s endpoint range.
 {% endhint %}
 
 ## Why a naive agent loop doesn't fit
@@ -45,9 +66,12 @@ start with real CloudWatch traces before you commit a design to a specific numbe
 A "naive agent loop," multiple sequential tool calls, a chain-of-thought pass before answering,
 a retrieval step followed by a separate generation step, each round-trip to a model or a
 downstream system adds latency that is additive, not overlapping. Three tool calls at 1-2
-seconds each is 3-6 seconds before you've generated a single word of the answer. A model doing
-extended reasoning before it produces output can run 5 to 15+ seconds on its own, with nothing
-you control at the network layer.
+seconds each is 3-6 seconds before you've generated a single word of the answer, and that's
+measured against the same ~5.35-7.1 s endpoint budget above, not the full eight seconds. Even
+with the corrected, more generous budget, three sequential tool calls alone can eat most or all
+of it before a final generation pass even starts. A model doing extended reasoning before it
+produces output can run 5 to 15+ seconds on its own, with nothing you control at the network
+layer.
 
 This is not a problem you tune your way out of. A faster HTTP client, a warmer connection pool,
 a better retry policy, none of that changes the fact that the *shape* of a multi-step agent loop
@@ -151,17 +175,26 @@ const MODEL_TIMEOUT: Duration = Duration::from_millis(2_500);
 // Constructing it per-invocation throws away connection reuse and adds a chunk of the
 // cold-start cost this page's budget table already charges you for, on every single call.
 async fn call_model(client: &Client, system_prompt: &str, user_text: &str) -> String {
+    let message = match Message::builder()
+        .role(ConversationRole::User)
+        .content(ContentBlock::Text(user_text.into()))
+        .build()
+    {
+        Ok(m) => m,
+        Err(e) => {
+            // A build error here means malformed input reached this far. Fall back
+            // rather than panic: a panic in a Lambda handler path returns no response
+            // at all, not even a canned one.
+            tracing::warn!(error = ?e, "failed to build converse message");
+            return canned_response();
+        }
+    };
+
     let request = client
         .converse()
         .model_id(MODEL_ID)
         .system(aws_sdk_bedrockruntime::types::SystemContentBlock::Text(system_prompt.into()))
-        .messages(
-            Message::builder()
-                .role(ConversationRole::User)
-                .content(ContentBlock::Text(user_text.into()))
-                .build()
-                .expect("valid message"),
-        )
+        .messages(message)
         .send();
 
     match timeout(MODEL_TIMEOUT, request).await {
@@ -440,6 +473,7 @@ after the structured response comes back.
 ## Sources
 
 - [Send the User a Progressive Response](https://developer.amazon.com/en-US/docs/alexa/custom-skills/send-the-user-a-progressive-response.html), Amazon (8-second budget, progressive response limits)
+- [Alexa skills, AWS Well-Architected Serverless Applications Lens](https://docs.aws.amazon.com/wellarchitected/latest/serverless-applications-lens/alexa-skills.html), AWS (confirms ASR/NLU/TTS happen before the skill's Lambda is invoked, and that the eight-second timeout applies to the Lambda call itself)
 - [About the Proactive Events API](https://developer.amazon.com/en-US/docs/alexa/smapi/proactive-events-api.html), Amazon
 - [alexa-samples/proactive-events-demo](https://github.com/alexa-samples/proactive-events-demo), Amazon (archived December 2023, pattern reference only)
 - [aws-sdk-bedrockruntime, docs.rs](https://docs.rs/crate/aws-sdk-bedrockruntime/latest), version 1.138.0 verified 2026-07

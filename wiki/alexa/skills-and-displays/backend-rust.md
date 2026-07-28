@@ -206,13 +206,23 @@ pub struct ResponseBody {
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OutputSpeech {
-    #[serde(rename = "type")]
-    pub speech_type: &'static str, // "PlainText" or "SSML"
-    pub text: String,
+#[serde(tag = "type", rename_all_fields = "camelCase")]
+pub enum OutputSpeech {
+    PlainText { text: String },
+    // Caller supplies the markup already wrapped in <speak>...</speak>; Alexa's
+    // parser rejects SSML without the root element.
+    #[serde(rename = "SSML")]
+    Ssml { ssml: String },
 }
 ```
+
+An `OutputSpeech` value only ever needs one of these two shapes, so an enum tagged on `type`
+models the contract directly instead of carrying a `speech_type` field that has to be kept in
+sync with which text field is actually populated. `PlainText` serializes its payload under
+`text`; the SSML variant serializes under `ssml`, matching Alexa's response contract, where
+`outputSpeech.text` is only valid alongside `"type": "PlainText"` and `outputSpeech.ssml` is
+only valid alongside `"type": "SSML"`. A struct with a single hard-coded `text` field cannot
+express the SSML case at all, no matter what `speech_type` says.
 
 `directives` and `card` stay as `serde_json::Value` on purpose. The APL document schema is
 large, versioned, and usually built from a template with a few substituted values, so a full
@@ -287,7 +297,7 @@ async fn handler(event: LambdaEvent<Value>) -> Result<Value, Error> {
         "IntentRequest" => {
             let intent_name = envelope["request"]["intent"]["name"].as_str().unwrap_or_default();
             match intent_name {
-                "ShowStatusIntent" => show_status_response(),
+                "ShowStatusIntent" => show_status_response(&envelope),
                 "AMAZON.StopIntent" | "AMAZON.CancelIntent" => end_response("Goodbye!"),
                 _ => end_response("Sorry, I didn't understand that."),
             }
@@ -308,19 +318,31 @@ fn launch_response() -> Value {
     })
 }
 
-fn show_status_response() -> Value {
+// Every request carries context.System.device.supportedInterfaces; a screenless Echo
+// simply omits the Alexa.Presentation.APL key. See the same check in APL displays.
+fn has_display(envelope: &Value) -> bool {
+    envelope["context"]["System"]["device"]["supportedInterfaces"]
+        .get("Alexa.Presentation.APL")
+        .is_some()
+}
+
+fn show_status_response(envelope: &Value) -> Value {
+    let mut directives = Vec::new();
+    if has_display(envelope) {
+        directives.push(json!({
+            "type": "Alexa.Presentation.APL.RenderDocument",
+            "token": "statusToken",
+            "document": { "type": "APL", "version": "2024.3", "mainTemplate": { "items": [
+                { "type": "Text", "text": "System status: OK", "fontSize": "48dp" }
+            ] } },
+            "datasources": {}
+        }));
+    }
     json!({
         "version": "1.0",
         "response": {
             "outputSpeech": { "type": "PlainText", "text": "Here's the current status." },
-            "directives": [{
-                "type": "Alexa.Presentation.APL.RenderDocument",
-                "token": "statusToken",
-                "document": { "type": "APL", "version": "2024.3", "mainTemplate": { "items": [
-                    { "type": "Text", "text": "System status: OK", "fontSize": "48dp" }
-                ] } },
-                "datasources": {}
-            }],
+            "directives": directives,
             "shouldEndSession": false
         }
     })

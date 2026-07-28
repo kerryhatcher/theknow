@@ -7,7 +7,7 @@ description: Testing strategy, certification checklist, distribution paths, and 
 The path from working locally to live on other people's devices. This covers the testing ladder
 (cheapest first), beta distribution, the certification gauntlet, versioning discipline, and the
 analytics you get after launch. Assumes you have a [skill interaction model](interaction-model.md)
-and [backend](skill-setup-and-tooling.md) already working; this is about validating it and moving
+and [backend](backend-rust.md) already working; this is about validating it and moving
 it forward.
 
 ## Testing ladder
@@ -196,7 +196,14 @@ example), you declare this via **account linking** in the skill metadata.
 **OAuth2 flow:** Alexa acts as the OAuth2 client. When a user enables your skill, the Alexa app
 directs them to your authorization server (your own login page or a third-party service like Auth0).
 After they authenticate and consent, your server returns an access token to Amazon, which stores it.
-On each skill invocation, the request includes the access token in `context.System.user.permissions.consentToken`.
+On each skill invocation, the request includes that access token in `context.System.user.accessToken`.
+That is the credential to send back to your own external service to identify the linked user; do not
+confuse it with `context.System.user.permissions.consentToken` (see below), which is a separate,
+legacy token for a different purpose: authorizing calls to Alexa's own customer-data APIs (device
+address, contact info), not your account-linked backend. Amazon's current guidance is to use
+`context.System.apiAccessToken` instead of `consentToken` for that permission-check path; `consentToken`
+is deprecated. See Amazon's [account-linking request documentation](https://developer.amazon.com/en-US/docs/alexa/account-linking/add-account-linking-logic-custom-skill.html)
+and the [request/response JSON reference](https://developer.amazon.com/en-US/docs/alexa/custom-skills/request-and-response-json-reference.html).
 
 Amazon recommends the **authorization code grant** (with refresh token) over implicit grant because
 it allows Alexa to renew the token without user re-authentication. Support for PKCE (Proof Key for
@@ -218,14 +225,22 @@ customer data: device address (full address or postal code only), customer conta
 (name, email, phone), or device settings (timezone, temperature units). Users grant or revoke these
 permissions in the Alexa app. Your skill can subscribe to permission-changed events to detect when
 consent is granted or revoked. Always check whether the permission was granted before calling the
-API; Amazon rejects skills that assume consent.
+API; Amazon rejects skills that assume consent. The token that authorizes these calls is
+`context.System.user.permissions.consentToken`; Amazon now recommends `context.System.apiAccessToken`
+instead, since `consentToken` is deprecated. Either way, this token is unrelated to account linking:
+it authorizes Alexa's own customer-data APIs, not calls to your external backend.
 
 See [Account Linking Concepts](https://developer.amazon.com/en-US/docs/alexa/account-linking/account-linking-concepts.html) and [Configure Permissions for Customer Information](https://developer.amazon.com/en-US/docs/alexa/custom-skills/configure-permissions-for-customer-information-in-your-skill.html).
 
 ## Versioning and safe change
 
-Alexa uses a three-stage model: `development`, `certified`, and `live`. Edit the development
-version freely; it's isolated from live until you explicitly promote.
+Alexa uses three `stage` values in the ASK CLI and SMAPI: `development`, `certified`, and `live`.
+These map to the console's publication statuses (In Development, Certified, Live); `certified` means
+the skill passed review but hasn't been promoted to live yet, the state you land in if you choose
+"Certify now, publish later" instead of certifying and publishing in one step. See
+[Test and Submit Your Skill](https://developer.amazon.com/en-US/docs/alexa/devconsole/test-and-submit-your-skill.html)
+for the full status table. Edit the development version freely; it's isolated from live until you
+explicitly promote.
 
 **Workflow:** In the console, Code tab (Alexa-hosted only) or via `ask deploy` (self-hosted), you
 edit and deploy to development. Once live, Amazon automatically creates a copy of the live version
@@ -317,6 +332,8 @@ changes for your use case.
 - [Skill Beta Testing for Alexa Skills](https://developer.amazon.com/en-US/docs/alexa/custom-skills/skills-beta-testing-for-alexa-skills.html)
 - [Test Your Skill Overview](https://developer.amazon.com/en-US/docs/alexa/test/test-your-skill-overview.html)
 - [Account Linking Concepts](https://developer.amazon.com/en-US/docs/alexa/account-linking/account-linking-concepts.html)
+- [Add Account Linking Logic to a Custom Skill](https://developer.amazon.com/en-US/docs/alexa/account-linking/add-account-linking-logic-custom-skill.html)
+- [Request and Response JSON Reference](https://developer.amazon.com/en-US/docs/alexa/custom-skills/request-and-response-json-reference.html)
 - [Requirements for Account Linking](https://developer.amazon.com/en-US/docs/alexa/account-linking/requirements-account-linking.html)
 - [Account Linking FAQ (Alexa+)](https://developer.amazon.com/docs/alexaplus/account-linking/faq.html)
 - [Configure Permissions for Customer Information](https://developer.amazon.com/en-US/docs/alexa/custom-skills/configure-permissions-for-customer-information-in-your-skill.html)

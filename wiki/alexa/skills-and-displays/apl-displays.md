@@ -51,8 +51,8 @@ The directive that carries both pieces to the device is
     "version": "2024.3",
     "import": [{ "name": "alexa-layouts", "version": "1.7.0" }],
     "mainTemplate": {
-      "parameters": ["payload"],
-      "items": [{ "type": "AlexaHeader", "headerTitle": "${payload.dash.title}" }]
+      "parameters": ["dash"],
+      "items": [{ "type": "AlexaHeader", "headerTitle": "${dash.title}" }]
     }
   },
   "datasources": {
@@ -236,7 +236,7 @@ tool when the screen's *structure* changes (dashboard to detail view). It's the 
   token means the commands silently don't run, no error surfaced to your logs.
 - **`SetValue`**, inside `ExecuteCommands`, changes one component property (text, color,
   visibility) by `id`. The move for "the CPU metric just refreshed."
-- **Data-binding expressions**, `${payload.metrics[0].value}` does the "same layout, new
+- **Data-binding expressions**, `${dash.metrics[0].value}` does the "same layout, new
   numbers" work for free just by sending fresh `datasources` against the same document.
   Transformers can reshape or annotate data (text-to-speech markup, image sourcing) before it
   hits the template.
@@ -272,21 +272,21 @@ converge on.
     }
   },
   "mainTemplate": {
-    "parameters": ["payload"],
+    "parameters": ["dash"],
     "items": [
       {
         "type": "Container",
         "width": "100vw",
         "height": "100vh",
         "items": [
-          { "type": "AlexaHeader", "headerTitle": "${payload.dash.title}" },
+          { "type": "AlexaHeader", "headerTitle": "${dash.title}" },
           {
             "type": "GridSequence",
             "grow": 1,
             "scrollDirection": "vertical",
             "childWidth": ["25vw"],
             "childHeight": ["25vh"],
-            "data": "${payload.dash.metrics}",
+            "data": "${dash.metrics}",
             "items": [
               {
                 "type": "TouchWrapper",

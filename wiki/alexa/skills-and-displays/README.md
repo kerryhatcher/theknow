@@ -27,10 +27,11 @@ load-bearing, especially version numbers and quotas, before you build on it.
 
 Read this before you design anything. Every sibling page returns to these.
 
-- **The response budget is roughly 8 seconds, and it is not negotiable.** That is Amazon's
-  own documented figure, not a hard published SLA, and ASR/NLU already eat 1-2 seconds of it
-  before your Lambda even starts. Realistic remaining budget for your code plus a model call
-  is closer to 3-5 seconds. Miss it and the user hears a generic error or silence, with no
+- **The response budget is roughly 8 seconds, starting at invocation, and it is not
+  negotiable.** That is Amazon's own documented figure, not a hard published SLA. ASR and NLU
+  finish before Alexa ever calls your Lambda, so they don't eat into the 8 seconds; after cold
+  start, your data fetch, the model call, and serialization, realistic remaining budget is
+  roughly 5.35-7.1 seconds. Miss it and the user hears a generic error or silence, with no
   detail in your logs. See [AI integration](ai-integration.md#the-response-budget).
 - **The same skill runs on screenless devices, so display is always conditional.** A
   development-stage skill is enabled on every device on the account that created it,
@@ -116,8 +117,8 @@ structs.
   it; branch on the entity-resolution status, not the raw slot string, or your `match` will
   panic on production traffic.
 - A multi-step agent loop (retrieval, then reasoning, then generation) that was fine in a
-  chat UI. Each round-trip is additive, not overlapping, and three 1-2 second calls alone
-  exceed the whole budget before you've produced a word.
+  chat UI. Each round-trip is additive, not overlapping, and three 1-2 second calls alone can
+  eat most or all of the ~5.35-7.1 s endpoint budget before you've produced a word.
 - Putting the model in the data path ("look up the order status" inside the prompt) instead
   of fetching first and asking the model only to phrase the result.
 - Forgetting the Lambda still needs its own skill-ID check even after the Alexa Skills Kit
