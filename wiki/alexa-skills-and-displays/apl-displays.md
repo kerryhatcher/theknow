@@ -30,12 +30,14 @@ An APL response is always two JSON objects, not one:
   `mainTemplate.parameters` and `${payload...}` expressions.
 
 This split exists so the expensive part (the document, potentially large, reused across
-requests) is cacheable, while the cheap part (a small data blob) changes on every turn. Upload
-a document once via the developer console's package system, or ship it inline, and on every
-later render you send only fresh `datasources` against the same document reference. That's
-the whole reason APL data binding exists instead of templating a full JSON tree in your
-backend on every turn, and it keeps your backend logic close to "build a data object," a much
-easier thing to unit test than "build a UI tree."
+requests) is cacheable, while the cheap part (a small data blob) changes on every turn. Host a
+document or package once at a URL you control (there is no developer-console upload feature
+for this, you self-host the JSON over HTTPS, S3 works fine), or reference an Amazon-maintained
+package like `alexa-layouts` by name, or ship it inline. On every later render you send only
+fresh `datasources` against the same document reference. That's the whole reason APL data
+binding exists instead of templating a full JSON tree in your backend on every turn, and it
+keeps your backend logic close to "build a data object," a much easier thing to unit test than
+"build a UI tree." (Source: [APL Package](https://developer.amazon.com/en-US/docs/alexa/alexa-presentation-language/apl-package.html))
 
 The directive that carries both pieces to the device is
 `Alexa.Presentation.APL.RenderDocument`:
@@ -101,17 +103,21 @@ function, not per intent handler.
 
 ## Viewport profiles: build for the lineup, not one screen
 
-The current Echo Show lineup spans real shape differences: Echo Show 5 (5.5", small), Echo
-Show 8 (8", medium), Echo Show 10 (10.1", medium, motorized swiveling base), Echo Show 15
-(15.6", 1920x1080, the only one that also mounts portrait), and Echo Show 21 (21.4",
-1920x1080, large). Fire TV and Fire tablets running your skill add more shapes again. A layout
-hardcoded to Show 8 pixel dimensions clips or floats awkwardly everywhere else. (Source:
-[Device Specifications: Echo Show](https://developer.amazon.com/docs/device-specs/device-specifications-echo-show.html))
+The current Echo Show lineup spans real shape differences: a small Echo Show 5, a mid-size
+Echo Show 8, an Echo Show 10 with a motorized swiveling base, and two large fixed displays,
+Echo Show 15 (15.6", 1920x1080, the only one that also mounts portrait) and Echo Show 21
+(21.4", 1920x1080). Fire TV and Fire tablets running your skill add more shapes again. A
+layout hardcoded to one device's pixel dimensions clips or floats awkwardly everywhere else.
+(Source, Show 15 and 21 figures: [Device Specifications: Echo Show](https://developer.amazon.com/docs/device-specs/device-specifications-echo-show.html);
+Amazon's developer docs do not currently publish equivalent spec pages for Show 5/8/10, so
+don't hardcode exact dimensions for those without checking the current retail listing.)
 
 APL's answer is **viewport profiles**, named buckets (`hubLandscapeSmall`,
-`hubLandscapeMedium`, `hubLandscapeLarge`, `hubPortraitMedium`, plus round/mobile/TV
-profiles for other device classes) that group real devices by shape, size, and orientation
-rather than exact pixels. Two mechanisms use them:
+`hubLandscapeMedium`, `hubLandscapeLarge`, `hubLandscapeXLarge`, `hubPortraitMedium`, plus
+round/mobile/TV profiles for other device classes) that group real devices by shape, size, and
+orientation rather than exact pixels. Amazon does not publish a device-to-profile mapping
+table, so don't assume which profile a given Show maps to, design against the profile
+categories, not a specific model. Two mechanisms use them:
 
 - **`when` conditions** on a layout or component, keyed off `@viewportProfileCategory` or the
   profile resource itself, to swap in a different structure per size class rather than
@@ -169,7 +175,7 @@ backend endpoint.
   "type": "TouchWrapper",
   "id": "metricTile-cpu",
   "onPress": [
-    { "type": "SendEvent", "arguments": ["${data.metricId}", "drillIn"] }
+    { "type": "SendEvent", "arguments": ["${data.id}", "drillIn"] }
   ],
   "item": {
     "type": "Frame",
@@ -181,22 +187,30 @@ backend endpoint.
 
 2. That fires an `Alexa.Presentation.APL.UserEvent` request at your backend, the same
    endpoint that handles `IntentRequest`. It carries `request.arguments` (exactly what you
-   passed to `SendEvent`) and `request.source` (which component and document token fired it).
+   passed to `SendEvent`), `request.source` (the component's type, handler, and id), and a
+   top-level `request.token`, the same document token from the `RenderDocument` that put this
+   screen up. Capture the token, you need it to target this document with `ExecuteCommands`.
 
 ```rust
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct AplUserEvent {
+    token: String,
     arguments: Vec<serde_json::Value>,
     source: serde_json::Value,
 }
 
 fn handle_apl_user_event(request: &serde_json::Value) -> serde_json::Value {
-    let event: AplUserEvent = serde_json::from_value(request.clone())
-        .expect("well-formed UserEvent");
+    // Never unwrap or expect in the handler path. A panic returns no response at all,
+    // so the user hears Alexa's generic error. See the backend page on error handling.
+    let event: AplUserEvent = match serde_json::from_value(request.clone()) {
+        Ok(event) => event,
+        Err(_) => return render_fallback_speech("Something went wrong with that screen."),
+    };
     match event.arguments.as_slice() {
         [metric_id, action] if action == "drillIn" => {
             let metric = metric_id.as_str().unwrap_or_default();
-            render_detail_screen(metric)
+            render_detail_screen(metric, &event.token)
         }
         _ => render_fallback_speech("I didn't catch that."),
     }
@@ -217,7 +231,9 @@ tool when the screen's *structure* changes (dashboard to detail view). It's the 
 "update one number." Cheaper, in order of how often you'll reach for them:
 
 - **`ExecuteCommands`**, a directive that runs APL commands (`SetValue`, `AutoPage`, `Scroll`,
-  animations) against the document already on screen, no re-send needed.
+  animations) against the document already on screen, no re-send needed. It needs a `token`
+  matching the `token` from the `RenderDocument` currently on that screen, a stale or missing
+  token means the commands silently don't run, no error surfaced to your logs.
 - **`SetValue`**, inside `ExecuteCommands`, changes one component property (text, color,
   visibility) by `id`. The move for "the CPU metric just refreshed."
 - **Data-binding expressions**, `${payload.metrics[0].value}` does the "same layout, new
@@ -266,6 +282,7 @@ converge on.
           { "type": "AlexaHeader", "headerTitle": "${payload.dash.title}" },
           {
             "type": "GridSequence",
+            "grow": 1,
             "scrollDirection": "vertical",
             "childWidth": ["25vw"],
             "childHeight": ["25vh"],
@@ -348,10 +365,10 @@ latency discussion in [AI integration](ai-integration.md).
 
 {% hint style="warning" %}
 Total skill response size (speech, directives, session attributes together) is capped at
-24 KB. A large inline `document` plus a data-heavy `datasources` object can hit that faster
-than expected; upload reusable documents as a package rather than inlining them on every
-response, and keep datasources to what the current screen actually needs. (Source:
-[response size discussion, Alexa developer forums](https://forums.developer.amazon.com/questions/47913/exceeded-max-response-size.html))
+**120 KB**. A large inline `document` plus a data-heavy `datasources` object can still hit
+that; host reusable documents rather than inlining them on every response, and keep
+`datasources` to what the current screen actually needs. (Source:
+[Request and Response JSON Reference](https://developer.amazon.com/en-US/docs/alexa/custom-skills/request-and-response-json-reference.html))
 {% endhint %}
 
 {% hint style="warning" %}
@@ -401,13 +418,14 @@ object, append it to `response_builder.add_directive(...)`, no manual JSON assem
 - [Alexa.Presentation.APL Interface Reference](https://developer.amazon.com/en-US/docs/alexa/alexa-presentation-language/apl-interface.html)
 - [APL Document](https://developer.amazon.com/en-US/docs/alexa/alexa-presentation-language/apl-document.html)
 - [APL Data Sources and Transformers](https://developer.amazon.com/en-US/docs/alexa/alexa-presentation-language/apl-data-source-v1.html)
+- [APL Package](https://developer.amazon.com/en-US/docs/alexa/alexa-presentation-language/apl-package.html)
 - [Select the Viewport Profiles Your Skill Supports](https://developer.amazon.com/en-US/docs/alexa/alexa-presentation-language/apl-select-the-viewport-profiles-your-skill-supports.html)
 - [Device Specifications: Echo Show](https://developer.amazon.com/docs/device-specs/device-specifications-echo-show.html)
 - [Responsive Components and Templates](https://developer.amazon.com/en-US/docs/alexa/alexa-presentation-language/apl-layouts-overview.html)
 - [Grid List (AlexaGridList)](https://developer.amazon.com/en-US/docs/alexa/alexa-presentation-language/apl-alexa-grid-list-layout.html)
 - [APL TouchWrapper](https://developer.amazon.com/en-US/docs/alexa/alexa-presentation-language/apl-touchwrapper.html)
 - [SendEvent Command](https://developer.amazon.com/en-US/docs/alexa/alexa-presentation-language/apl-send-event-command.html)
-- [Exceeded Max Response Size, Alexa developer forums](https://forums.developer.amazon.com/questions/47913/exceeded-max-response-size.html)
+- [Request and Response JSON Reference](https://developer.amazon.com/en-US/docs/alexa/custom-skills/request-and-response-json-reference.html)
 - [APL for Audio Reference](https://developer.amazon.com/en-US/docs/alexa/alexa-presentation-language/apl-for-audio-reference.html)
 - [ask-sdk-model RenderDocumentDirective, GitHub](https://github.com/alexa/alexa-apis-for-python/blob/master/ask-sdk-model/ask_sdk_model/interfaces/alexa/presentation/apl/render_document_directive.py)
 - [ask-sdk-python Response Building](https://developer.amazon.com/en-US/docs/alexa/alexa-skills-kit-sdk-for-python/build-responses.html)

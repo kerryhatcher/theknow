@@ -5,10 +5,13 @@ description: How an utterance becomes a typed request your backend can switch on
 # The interaction model
 
 The interaction model is the JSON document that tells Alexa's NLU what a user can say and how
-to turn that speech into a structured request your code receives. Everything on the display
-side (see [APL and displays](apl-displays.md)) is downstream of this: no intent match, no
-request, nothing to render. This page covers the voice half of the contract; the request and
-response envelope your Lambda actually handles lives in [The backend contract](backend-rust.md).
+to turn that speech into a structured request your code receives. Everything the user *says*
+is downstream of this: no intent match, no `IntentRequest`, nothing to render in response to
+speech. A tap on an already-rendered screen is a separate path, an APL user event request
+reaches your endpoint directly, without ASR or NLU involved at all, see
+[APL and displays](apl-displays.md) for that loop. This page covers the voice half of the
+contract; the request and response envelope your Lambda actually handles lives in
+[The fulfillment backend in Rust](backend-rust.md).
 
 ## The mental model
 
@@ -80,12 +83,21 @@ A new interaction model in the developer console adds `AMAZON.HelpIntent`,
 them in the model isn't enough, your Lambda handler still has to branch on each one and return
 something sensible; an unhandled `AMAZON.FallbackIntent` that falls through to your generic
 "sorry" response is fine, one that throws an unhandled-match error is a certification failure.
-`AMAZON.NavigateHomeIntent` and the `AudioPlayer` control intents are recommended, not required,
-unless you use the corresponding interface.
+
+Amazon's own documentation is inconsistent about `AMAZON.NavigateHomeIntent`. The
+[Standard Built-in Intents](https://developer.amazon.com/en-US/docs/alexa/custom-skills/standard-built-in-intents.html)
+reference does not list it as a must-implement intent, but the
+[Tips for Using Built-in Intents](https://developer.amazon.com/en-US/docs/alexa/interaction-model-design/tips-for-using-built-in-intents-for-your-skill.html)
+page calls it required outright for any skill with a multimodal (visual, on-screen) component.
+In practice Alexa handles `NavigateHomeIntent` on-device for screen-capable skills, so your
+Lambda usually never sees it and needs no handler. Declaring it in a multimodal interaction
+model costs nothing either way, so declare it and move on rather than betting on which Amazon
+page is current.
 
 Source: [Standard Built-in Intents](https://developer.amazon.com/en-US/docs/alexa/custom-skills/standard-built-in-intents.html),
 [Implement the Built-in Intents](https://developer.amazon.com/en-US/docs/alexa/custom-skills/implement-the-built-in-intents.html),
-[Functional Testing for a Custom Skill](https://developer.amazon.com/en-US/docs/alexa/custom-skills/functional-testing-for-a-custom-skill.html).
+[Functional Testing for a Custom Skill](https://developer.amazon.com/en-US/docs/alexa/custom-skills/functional-testing-for-a-custom-skill.html),
+[Tips for Using Built-in Intents](https://developer.amazon.com/en-US/docs/alexa/interaction-model-design/tips-for-using-built-in-intents-for-your-skill.html).
 
 ## Slots: built-in types, custom types, and entity resolution
 
@@ -112,14 +124,24 @@ That's what entity resolution is for. Alongside the raw spoken text, a resolved 
 
 - **`ER_SUCCESS_MATCH`**, the spoken value matched a value or synonym you defined (or, for an
   extended built-in type, an entry in Alexa's own knowledge graph). You get back the canonical
-  value and its ID, not just whatever the user said, so "the bear one" and "Bear Creek" both
-  resolve to the same ID.
+  value and its ID in `values[0]`, not just whatever the user said, so "the bear one" and "Bear
+  Creek" both resolve to the same ID. A match can carry more than one candidate: an ambiguous
+  spoken term (a name that's close to two of your defined values) returns multiple entries in
+  `values` under the same `ER_SUCCESS_MATCH` status, so don't just grab `values[0]` blindly,
+  check the length first and reprompt to disambiguate ("did you mean X or Y") when there's more
+  than one.
 - **`ER_SUCCESS_NO_MATCH`**, nothing you defined matched. The raw slot value is still there,
   it's just unresolved.
+- **`ER_ERROR_TIMEOUT`** and **`ER_ERROR_EXCEPTION`**, the resolution process itself failed.
+  These are not a no-match, they're a resolver failure, and a handler that treats every
+  non-success status as "user said something outside my list" will silently swallow a real
+  backend problem. Log these separately and fall back to the raw slot text rather than treating
+  them the same as `ER_SUCCESS_NO_MATCH`.
 
-Branch on the status, not on the raw string. A no-match isn't an error, it's the normal path
-for "the value is outside what I anticipated," and your handler should reprompt or fall back
-to the raw text rather than assume every slot fill is one of your enumerated values.
+Branch on the full status set above, not on a binary match/no-match and not on the raw string.
+A no-match isn't an error, it's the normal path for "the value is outside what I anticipated,"
+and your handler should reprompt or fall back to the raw text rather than assume every slot
+fill is one of your enumerated values or that every non-match status means the same thing.
 
 Sources: [Entity Resolution](https://developer.amazon.com/en-US/docs/alexa/custom-skills/entity-resolution.html),
 [Entity Resolution for Custom Slot Types](https://developer.amazon.com/en-US/docs/alexa/custom-skills/entity-resolution-for-custom-slot-types.html).
@@ -238,8 +260,8 @@ built-ins:
         {
           "name": "TRAIL_NAME",
           "values": [
-            { "name": { "value": "Bear Creek", "synonyms": ["the bear one"] } },
-            { "name": { "value": "Meadow Loop", "synonyms": ["meadow trail"] } }
+            { "id": "bear_creek", "name": { "value": "Bear Creek", "synonyms": ["the bear one"] } },
+            { "id": "meadow_loop", "name": { "value": "Meadow Loop", "synonyms": ["meadow trail"] } }
           ]
         }
       ]
@@ -250,18 +272,40 @@ built-ins:
           "name": "GetTrailStatusIntent",
           "delegationStrategy": "ALWAYS",
           "slots": [
-            { "name": "TrailName", "type": "TRAIL_NAME", "elicitationRequired": true }
+            {
+              "name": "TrailName",
+              "type": "TRAIL_NAME",
+              "elicitationRequired": true,
+              "confirmationRequired": false,
+              "prompts": { "elicitation": "Elicit.Slot.GetTrailStatusIntent.TrailName" }
+            }
           ]
         }
       ]
-    }
+    },
+    "prompts": [
+      {
+        "id": "Elicit.Slot.GetTrailStatusIntent.TrailName",
+        "variations": [
+          { "type": "PlainText", "value": "Which trail do you want the status for?" }
+        ]
+      }
+    ]
   }
 }
 ```
 
-And the matching dispatch shape on the Rust side, request type first, then intent name. This
-is the same `match` shown in full in [The backend contract](backend-rust.md); here's just the
-routing skeleton:
+`elicitationRequired: true` only does something if the slot's `prompts.elicitation` points at
+an entry in this top-level `prompts` array; without both pieces `ask deploy` rejects the model.
+The developer console fills this in for you when you set elicitation through the UI, a
+hand-written skill package needs to write it out explicitly, as above. See the
+[Interaction Model Schema](https://developer.amazon.com/en-US/docs/alexa/smapi/interaction-model-schema.html)
+for the full `prompts` entry shape.
+
+And the matching dispatch shape on the Rust side, request type first, then intent name. This is
+the same `match` shown in full in [The fulfillment backend in Rust](backend-rust.md); here's
+just the routing skeleton, including the APL user event arm a display skill needs alongside the
+voice arms:
 
 ```rust
 let response_body = match request_type {
@@ -276,10 +320,15 @@ let response_body = match request_type {
             _ => end_response("Sorry, I didn't understand that."),
         }
     }
+    "Alexa.Presentation.APL.UserEvent" => handle_user_event(&envelope),
     "SessionEndedRequest" => json!({ "response": {} }),
     _ => end_response("Unsupported request type."),
 };
 ```
+
+`handle_user_event` never goes through this page's model at all, a button tap arrives as this
+request type directly, with no ASR and no intent match. See
+[APL and displays](apl-displays.md) for what the handler does with it.
 
 `get_trail_status` is where you'd read `intent.slots.TrailName.resolutions` and branch on
 `ER_SUCCESS_MATCH` versus `ER_SUCCESS_NO_MATCH` per the entity resolution section above,
@@ -324,19 +373,21 @@ Source: [Introducing AI-native SDKs for Alexa+](https://developer.amazon.com/en-
   interaction model actually gets edited and deployed.
 * [APL and displays](apl-displays.md), what happens after an intent resolves and you need to
   put something on the Echo Show's screen.
-* [The backend contract](backend-rust.md), the full request/response JSON envelope and the
-  Rust types for it.
+* [The fulfillment backend in Rust](backend-rust.md), the full request/response JSON envelope
+  and the Rust types for it.
 
 ## Sources
 
 * [Choose the Invocation Name for a Custom Skill](https://developer.amazon.com/en-US/docs/alexa/custom-skills/choose-the-invocation-name-for-a-custom-skill.html)
 * [Standard Built-in Intents](https://developer.amazon.com/en-US/docs/alexa/custom-skills/standard-built-in-intents.html)
 * [Implement the Built-in Intents](https://developer.amazon.com/en-US/docs/alexa/custom-skills/implement-the-built-in-intents.html)
+* [Tips for Using Built-in Intents](https://developer.amazon.com/en-US/docs/alexa/interaction-model-design/tips-for-using-built-in-intents-for-your-skill.html)
 * [Functional Testing for a Custom Skill](https://developer.amazon.com/en-US/docs/alexa/custom-skills/functional-testing-for-a-custom-skill.html)
 * [Entity Resolution](https://developer.amazon.com/en-US/docs/alexa/custom-skills/entity-resolution.html)
 * [Entity Resolution for Custom Slot Types](https://developer.amazon.com/en-US/docs/alexa/custom-skills/entity-resolution-for-custom-slot-types.html)
 * [Dialog Interface Reference](https://developer.amazon.com/en-US/docs/alexa/custom-skills/dialog-interface-reference.html)
 * [Delegate Dialog to Alexa](https://developer.amazon.com/en-US/docs/alexa/custom-skills/delegate-dialog-to-alexa.html)
+* [Interaction Model Schema](https://developer.amazon.com/en-US/docs/alexa/smapi/interaction-model-schema.html)
 * [Manage Skill Session and Session Attributes](https://developer.amazon.com/en-US/docs/alexa/custom-skills/manage-skill-session-and-session-attributes.html)
 * [Develop Skills in Multiple Languages](https://developer.amazon.com/en-US/docs/alexa/custom-skills/develop-skills-in-multiple-languages.html)
 * [Introducing AI-native SDKs for Alexa+](https://developer.amazon.com/en-US/blogs/alexa/alexa-skills-kit/2025/02/new-alexa-announce-blog)

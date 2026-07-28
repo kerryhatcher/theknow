@@ -124,7 +124,7 @@ pub struct Session {
 }
 
 #[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all_fields = "camelCase")]
 pub enum RequestBody {
     LaunchRequest {
         request_id: String,
@@ -142,6 +142,7 @@ pub enum RequestBody {
         request_id: String,
         arguments: Vec<Value>,
         source: Value,
+        token: String,
     },
     // Anything Alexa adds later deserializes here instead of failing the whole request.
     #[serde(other)]
@@ -159,6 +160,18 @@ pub struct Intent {
 The `#[serde(other)]` catch-all is not decoration. Alexa adds request types over time
 (APL UserEvent itself is one such addition), and without it a single unrecognized type fails
 deserialization for the whole envelope instead of falling through to a default response.
+
+Watch the attribute name. `rename_all` on a tagged enum only camel-cases the *variant* names
+used as tag values, it does not touch the fields inside each struct variant. Alexa's tag
+values are PascalCase (`"IntentRequest"`, not `"intentRequest"`), so `rename_all` here would
+actually break the tag match while leaving `request_id` unrenamed and failing to match
+`requestId`. `rename_all_fields` is the attribute that camel-cases the fields inside every
+struct variant while leaving the variant names, and therefore the tag values, alone. That is
+the one you want for this shape. Mixing the two up compiles fine and fails silently at
+runtime, which is worse than a compile error, so it's worth getting the name right the first
+time.
+
+### The response side
 
 The response side is where `Option` and `skip_serializing_if` matter, because Alexa's JSON
 parser is strict about the shape it receives: a `null` where a field is simply absent, or an
@@ -223,10 +236,10 @@ SDKs for Node.js, Python, and Java. Given `alexa_sdk`'s staleness and missing AP
 hand-rolled serde structs like the ones above are the normal answer for a Rust skill backend
 in 2026, not a stopgap. If you're coming from Python, the officially supported
 [`ask-sdk-python`](https://github.com/alexa/alexa-skills-kit-sdk-for-python) gives you a
-request/response object model and a decorator-based handler dispatch (`@sdk_builder`-style
-request handlers) that Rust simply has no equivalent for. Node.js has the matching official
-`ask-sdk` package. Rust has neither; budget for the structs above instead of hunting for a
-port.
+request/response object model and dispatches to handlers you register on a `SkillBuilder`
+with `@sb.request_handler(can_handle_func=...)`, decorator-based routing that Rust simply has
+no equivalent for. Node.js has the matching official `ask-sdk` package. Rust has neither;
+budget for the structs above instead of hunting for a port.
 
 ## A minimal end-to-end Lambda
 
@@ -334,6 +347,8 @@ the example short. Swap in `RequestEnvelope`/`ResponseEnvelope` once the match a
 handful of intents; see [Interaction model](interaction-model.md) for how the intent set
 itself is defined.
 
+### Build and deploy
+
 Build and deploy with [cargo-lambda](https://www.cargo-lambda.info/):
 
 ```bash
@@ -341,12 +356,16 @@ cargo lambda build --release --arm64
 cargo lambda deploy --iam-role <your-lambda-execution-role-arn>
 ```
 
-`cargo lambda build` cross-compiles for the `provided.al2023` custom runtime; `--arm64`
-targets Graviton. `cargo lambda deploy` uploads the built binary, creating the function on
-first run and updating its code on subsequent runs
-([cargo-lambda deploy docs](https://www.cargo-lambda.info/commands/deploy.html)). There's
-also a manual `zip`-and-upload path if you'd rather not add the tool, but cargo-lambda is the
-maintained way to do this and handles the `bootstrap` binary naming for you.
+`cargo lambda build` cross-compiles the binary to Linux and names it `bootstrap`, the file
+name Lambda's custom runtime expects; `--arm64` targets Graviton instead of x86_64. The
+runtime identifier itself, `provided.al2023`, is not something the build step chooses, it's
+set on the Lambda function at deploy time. `cargo lambda deploy` uploads the built binary,
+creating the function with that runtime on first run and updating its code on subsequent runs
+([cargo-lambda deploy docs](https://www.cargo-lambda.info/commands/deploy.html)). Omit
+`--iam-role` and cargo-lambda creates a basic execution role for you; pass one once you need
+broader permissions (Secrets Manager, Bedrock, and so on). There's also a manual
+`zip`-and-upload path if you'd rather not add the tool, but cargo-lambda is the maintained way
+to do this and handles the `bootstrap` binary naming for you.
 
 ## Deployment wiring
 
@@ -360,12 +379,36 @@ respond" bug:
    your Skill ID if you set skill ID verification on the trigger. Without this trigger, the
    invocation from Alexa's side is simply denied, regardless of what the manifest says.
 
+Point the manifest at a specific Lambda **version or alias ARN**, not the bare function ARN,
+which always resolves to `$LATEST`. `cargo lambda deploy` publishes new code to `$LATEST` on
+every run, so wiring the manifest to `$LATEST` means a mid-development deploy can change a
+live skill's behavior out from under you. Publish a version and point an alias at it instead,
+then move the alias forward once you've tested the new code
+([Host a Custom Skill as an AWS Lambda Function](https://developer.amazon.com/en-US/docs/alexa/custom-skills/host-a-custom-skill-as-an-aws-lambda-function.html)).
+
 Prefer arm64 (Graviton) over x86_64 for both cost and cold-start latency; Rust's small binary
 size means the difference is more pronounced than for a JVM or Node function with heavy
-dependencies, but it's still real. Cold starts matter specifically because Alexa's own
-timeout budget is fixed at roughly 8 seconds end to end, and a cold start eats into the same
-budget that an AI-agent call would need; see [AI integration](ai-integration.md) for how that
-budget gets split when the fulfillment logic calls out to a model.
+dependencies, but it's still real. For a skill that can't tolerate an occasional slow cold
+start, AWS Lambda's Provisioned Concurrency keeps a set number of execution environments
+warm; it costs money whether or not it's invoked, so reach for it only once cold starts are an
+observed problem, not a precaution.
+
+{% hint style="warning" %}
+A new Lambda function's timeout defaults to **3 seconds**
+([AWS Lambda timeout configuration](https://docs.aws.amazon.com/lambda/latest/dg/configuration-timeout.html)),
+well under Alexa's own roughly 8-second response budget. Amazon's own guidance for
+Lambda-backed skills is to raise the timeout to at least 8 seconds
+([Alexa Lambda troubleshooting guide](https://developer.amazon.com/en-US/docs/alexa/smarthome/troubleshooting-guide.html)).
+Leave the default and your function gets killed by AWS before Alexa's own timeout ever fires,
+and from the user's side that failure looks identical to a slow handler, a support dead end
+with no useful signal in your own logs about why. Set it explicitly; don't rely on the
+default.
+{% endhint %}
+
+Cold starts matter specifically because Alexa's own timeout budget is fixed at roughly 8
+seconds end to end, and a cold start eats into the same budget that an AI-agent call would
+need; see [AI integration](ai-integration.md) for how that budget gets split when the
+fulfillment logic calls out to a model.
 
 ## Error handling
 
@@ -374,14 +417,25 @@ stack trace. It speaks a generic error message to the user and ends the session,
 detail passed through. That's a bad user experience but more importantly it's a support
 dead end, because you learn nothing about what happened from the user's side.
 
-The fix is structural: never let an unhandled error propagate out of the handler. Catch every
-failure path inside your own code and always return a valid response with real speech, even
-if that speech is just an apology. The catch-all pattern above (`end_response("Sorry,
-something went wrong.")` on the skill-ID mismatch, `_ => end_response(...)` on unrecognized
-request types and intents) is the general shape: exhaust your `match` arms with a fallback
-that speaks, not one that returns `Err`. Reserve an actual `Err` return from the handler for
-cases you want Lambda's own retry/monitoring behavior on, which for a synchronous voice
-response is close to never.
+The fix is structural: never let an unhandled error propagate out of the handler as a
+returned `Err`. Catch every failure path inside your own code and return a valid response
+with real speech instead, even if that speech is just an apology. The catch-all pattern above
+(`end_response("Sorry, something went wrong.")` on the skill-ID mismatch, `_ =>
+end_response(...)` on unrecognized request types and intents) is the general shape: exhaust
+your `match` arms with a fallback that speaks, not one that returns `Err`. Reserve an actual
+`Err` return from the handler for cases you want Lambda's own retry/monitoring behavior on,
+which for a synchronous voice response is close to never.
+
+This only covers a returned error, not a panic. A panic inside the handler future does not
+produce a response at all, graceful or otherwise, it hangs the invocation until Alexa's own
+timeout fires and the user hears Alexa's generic "is not responding" message instead of your
+apology
+([`aws-lambda-rust-runtime` issue #221](https://github.com/aws/aws-lambda-rust-runtime/issues/221)).
+The example above avoids this by using `.unwrap_or_default()` everywhere instead of
+`.unwrap()`/`.expect()`, which cannot panic on missing or wrong-shaped JSON. Keep that
+discipline as your handler logic grows: treat `unwrap`/`expect` in the handler path as a bug,
+not a shortcut, and route anything that can fail through `Result` and your own fallback
+speech instead.
 
 ## Local development and testing
 
@@ -435,3 +489,6 @@ and not tied to a person the way a stable `userId` is.
 - [`aws-lambda-rust-runtime`](https://github.com/awslabs/aws-lambda-rust-runtime), GitHub, AWS-maintained.
 - [cargo-lambda documentation](https://www.cargo-lambda.info/), build/deploy/watch/invoke commands.
 - [ask-sdk-python](https://github.com/alexa/alexa-skills-kit-sdk-for-python), the officially supported Python SDK.
+- [`aws-lambda-rust-runtime` issue #221](https://github.com/aws/aws-lambda-rust-runtime/issues/221), a panicking handler hangs the invocation instead of returning a response.
+- [AWS Lambda function timeout configuration](https://docs.aws.amazon.com/lambda/latest/dg/configuration-timeout.html), default is 3 seconds.
+- [Alexa Lambda troubleshooting guide](https://developer.amazon.com/en-US/docs/alexa/smarthome/troubleshooting-guide.html), Amazon's recommendation to raise the timeout to at least 8 seconds.

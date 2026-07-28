@@ -30,12 +30,14 @@ table as an engineering estimate, not a spec:
 | The model call | 800 ms - 2 s (small model, short prompt) | Estimate; see latency strategies below. |
 | Response serialization + directive assembly | <10 ms | Negligible if you're building `serde_json::json!` literals, not templating a large document per request. |
 | **Total documented budget** | **~8 s** | [Progressive Response docs](https://developer.amazon.com/en-US/docs/alexa/custom-skills/send-the-user-a-progressive-response.html) |
-| **Realistic remaining budget for your code + the model call** | **3-5 s** | Estimate: total minus ASR/NLU minus margin for network jitter. |
+| **Sum of the rows above** | **~1.9-4.7 s consumed** | Adding the estimate rows together, low end to low end and high end to high end. |
+| **Realistic remaining budget for your code + the model call** | **~3.3-6.1 s** | 8 s minus the row above. Treat the low end as your design target; the high end assumes every stage lands at its best case simultaneously, which real traffic rarely does. |
 
 {% hint style="warning" %}
 Only the 8-second figure is a documented Amazon number. Every other row is an engineering
 estimate based on how these systems generally behave. Measure your own ASR/NLU overhead and cold
-start with real CloudWatch traces before you commit to a design that assumes 3 seconds versus 5.
+start with real CloudWatch traces before you commit a design to a specific number inside that
+3.3-6.1 s range.
 {% endhint %}
 
 ## Why a naive agent loop doesn't fit
@@ -60,7 +62,7 @@ Ranked from biggest architectural win to smallest UX polish. Layer several; don'
 
 | # | Strategy | What it buys | Cost |
 |---|---|---|---|
-| 1 | Pre-fetch the data, model only phrases it | The single biggest win. Removes an entire I/O round-trip from the model's critical path. | Requires your backend to know what data the intent needs before calling the model, i.e. deterministic slot-to-query mapping. |
+| 1 | Pre-fetch the data, model only phrases it | The single biggest win. Removes an entire I/O round-trip from the model's critical path. | Only works when the intent's slots deterministically tell you what to fetch. Breaks for any skill where deciding what to fetch needs the reasoning you're trying to remove, disambiguating a vague request, following up on "that one" without a stored reference, ranking which of several sources answers the question. Those belong in the out-of-turn pattern below, not this row. |
 | 2 | Small/fast model, short prompt, capped output tokens | Gets the model call itself down to roughly 1-2 s instead of 5+ s. | Less capable model means simpler synthesis only, not multi-step reasoning. |
 | 3 | Cache the expensive part | Skips the data fetch and sometimes the model call entirely on repeat requests. | Staleness; needs an invalidation story. |
 | 4 | Parallelize independent fetches with `tokio::join!` | Turns N sequential I/O calls into one wall-clock max instead of a sum. | Only helps if the fetches are actually independent; doesn't touch the model call itself. |
@@ -71,7 +73,10 @@ Ranked from biggest architectural win to smallest UX polish. Layer several; don'
 The model should never be in the data path. If your prompt includes instructions like "look up
 the user's order status," you've put retrieval inside the thing you're trying to keep fast. Fetch
 the order status yourself, hand the model the number, and ask it only to phrase a sentence around
-it. That single change removes more latency than any model swap will.
+it. That single change removes more latency than any model swap will, but it only applies when
+the intent alone tells you what to fetch. A skill whose job is figuring out what the user actually
+wants before you know what to query still needs that reasoning somewhere, it just can't happen
+inside the voice turn; see out-of-turn completion below.
 
 **Streaming, honestly assessed.** `converse_stream()` helps a chat UI or a background job
 rendering partial output as it arrives. It does not help here: Alexa needs a complete
@@ -97,17 +102,20 @@ opted-in customers. Verified constraints, read them before you design around thi
   (`AMAZON.OrderStatus.Updated`, `AMAZON.WeatherAlert.Activated`, and similar), one instance of
   each schema per skill. A result that doesn't map onto an existing schema doesn't fit here;
   there's no "just send this string" escape hatch.
-- It's a chime and a notification the user has to ask Alexa to read, not a live screen update.
-  Nothing lets a third-party custom skill silently repaint an idle Echo Show. That exists for
-  Smart Home Skills reporting device state (`ReportState`/`ChangeReport`), a materially different
-  integration with its own certification path, not a substitute for APL.
+- The documented delivery mechanism is a notification the customer has to ask Alexa to read;
+  Amazon's API docs describe the opt-in, the schema, and the rate limit but do not themselves spell
+  out chime-versus-screen behavior on a device with a display (unverified as of 2026-07). Nothing
+  in the API surface gives a third-party custom skill a way to silently repaint an idle Echo Show.
+  That exists for Smart Home Skills reporting device state (`ReportState`/`ChangeReport`), a
+  materially different integration with its own certification path, not a substitute for APL.
 
 Practical pattern: acknowledge in the turn ("I'll let you know when your report is ready"), end
 the session cleanly, kick the real work to an SQS-fed worker Lambda or Step Functions, and have
 that worker POST the Proactive Event when it finishes. This is the honest option for anything
 genuinely slow, and it sidesteps the timeout instead of fighting it. See
 [alexa-samples/proactive-events-demo](https://github.com/alexa-samples/proactive-events-demo) for
-a working reference.
+the pattern, useful for the shape of the integration, not for its Node.js version or SDK calls;
+Amazon archived the repo in December 2023 and no longer updates it.
 
 ## Calling Bedrock from Rust
 
@@ -133,9 +141,15 @@ use aws_sdk_bedrockruntime::{Client, types::{ContentBlock, ConversationRole, Mes
 use std::time::Duration;
 use tokio::time::timeout;
 
-const MODEL_ID: &str = "anthropic.claude-3-5-haiku-20241022-v1:0"; // region- and account-gated
+// Verified against AWS's model card 2026-07-28: Claude Haiku 4.5, lifecycle "Active".
+// Model IDs change as Amazon adds and retires models; re-check yours against the
+// Bedrock model catalog (link below) rather than trusting this string long-term.
+const MODEL_ID: &str = "anthropic.claude-haiku-4-5-20251001-v1:0"; // region- and account-gated
 const MODEL_TIMEOUT: Duration = Duration::from_millis(2_500);
 
+// Build the client once, outside the handler, and reuse it across warm invocations.
+// Constructing it per-invocation throws away connection reuse and adds a chunk of the
+// cold-start cost this page's budget table already charges you for, on every single call.
 async fn call_model(client: &Client, system_prompt: &str, user_text: &str) -> String {
     let request = client
         .converse()
@@ -173,17 +187,24 @@ fn extract_text(output: &aws_sdk_bedrockruntime::operation::converse::ConverseOu
 ```
 
 The model ID string is region- and account-gated: Bedrock model access is granted per AWS
-account per region, and the exact ID format (`anthropic.claude-3-5-haiku-...` versus a
-cross-region inference profile ID) shifts as Amazon adds models, so verify the current ID for
-your account against the [Bedrock model IDs reference](https://docs.aws.amazon.com/bedrock/latest/userguide/model-ids.html)
-rather than copying one from an old blog post. `tokio::time::timeout` wrapping the call is not
-optional here: without it, a slow or throttled Bedrock response consumes your entire remaining
-budget with nothing to show for it. Degrading to a canned response is strictly better than
-letting the Lambda hang until Alexa's own timeout fires and the user hears silence or a generic
-error.
+account per region, and the exact ID format (`anthropic.claude-haiku-4-5-...` versus a
+cross-region inference profile ID prefixed `us.`/`eu.`/etc.) shifts as Amazon adds and retires
+models, so verify the current ID for your account against the
+[Bedrock models at a glance](https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html)
+page rather than copying one from an old blog post, this page included. Every model card also
+states a lifecycle status (Active, Legacy, or Deprecated) and, where applicable, an EOL date;
+check both before you ship, not just the ID string.
+
+`tokio::time::timeout` wrapping the call is not optional here: without it, a slow or throttled
+Bedrock response consumes your entire remaining budget with nothing to show for it. Degrading to
+a canned response is strictly better than letting the Lambda hang until Alexa's own timeout fires
+and the user hears silence or a generic error. Construct the `Client` once, before the Lambda
+runtime's request loop starts, and pass a reference into the handler on every invocation. Building
+it inside the handler recreates the HTTP connection pool and credential resolution on every
+request, warm or cold, which works against the cold-start row you already budgeted for above.
 
 Python readers doing the same integration: use `boto3`'s `bedrock-runtime` client and its
-[`converse()` method](https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/bedrock-runtime/client/converse.html),
+[`converse()` method](https://docs.aws.amazon.com/boto3/latest/reference/services/bedrock-runtime/client/converse.html),
 paired with the [`ask-sdk-python`](https://github.com/alexa/alexa-skills-kit-sdk-for-python)
 request/response handlers for the skill side. The shape is the same: one call, no streaming, a
 timeout you enforce yourself (Python's `asyncio.wait_for` around the boto3 call, or a bounded
@@ -235,15 +256,48 @@ struct DisplayPayload {
 #[derive(serde::Deserialize)]
 struct Metric {
     label: String,
-    value: serde_json::Value, // string or number, both appear in practice
-    trend: String,
+    value: MetricValue,
+    trend: Trend,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum MetricValue {
+    Text(String),
+    Number(f64),
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Trend {
+    Up,
+    Down,
+    Flat,
+}
+```
+
+Model output crossing into an APL datasource is a trust boundary, treat it the same way you'd
+treat unsanitized user input, not as a formatting detail. `serde_json::from_str::<AgentResponse>`
+only proves the JSON has the right shape: right field names, right nesting. It says nothing about
+whether the content fits your layout. Two changes narrow that gap instead of just naming it.
+First, `trend` as an enum turns an out-of-set value like `"skyrocketing"` into the same
+deserialization failure a missing field would be, rather than a string your APL template doesn't
+know how to branch on. Second, bound anything with unbounded length yourself after deserializing,
+since no `derive` macro does it for you: a `metrics` array the model pads to twenty rows, or a
+`label` running to a paragraph, both deserialize cleanly and both break a fixed-slot layout.
+
+```rust
+fn fits_layout(r: &AgentResponse) -> bool {
+    r.display.metrics.len() <= 6
+        && r.display.metrics.iter().all(|m| m.label.len() <= 40)
+        && r.display.headline.len() <= 60
 }
 ```
 
 Validate before this reaches an APL datasource, because APL rendering happens on-device and a
-malformed datasource fails silently or renders a broken screen with no server-side stack trace.
-`serde_json::from_str::<AgentResponse>(...)` is the validation: if it errors, don't retry the
-model inside your latency budget, fall straight to a canned `speech` string with no
+malformed or oversized datasource fails silently or renders a broken screen with no server-side
+stack trace. Treat a deserialization error and a failed `fits_layout` check the same way: don't
+retry the model inside your latency budget, fall straight to a canned `speech` string with no
 `RenderDocument` directive. A voice-only degraded answer beats a half-populated screen or a
 Lambda panic. The mapping from `speech` to `outputSpeech` and `display` to the APL datasource,
 plus the document templates themselves, is covered in [APL displays](apl-displays.md).
@@ -318,23 +372,31 @@ not a retry loop; an 8-second budget rarely has room for a second attempt.
 ## Alexa+ in 2026: what changes for a new project
 
 Amazon's rearchitecture around Alexa+, its generative-AI-powered assistant, added integration
-surfaces alongside, not instead of, classic custom skills. Per Amazon's own
-[developer announcement](https://developer.amazon.com/en-US/blogs/alexa/alexa-skills-kit/2025/02/new-alexa-announce-blog),
-three new SDKs target a different problem than this page solves: the **Action SDK** for
-real-time API-backed task completion (reservations, bookings), the **Web Action SDK** for
-partners without an API, letting Alexa navigate an existing website via low-code workflows, and
-the **Multi-Agent SDK** for wiring a specialized third-party agent (tutoring, research) alongside
-Alexa's own reasoning. Existing custom skills stay supported.
+surfaces alongside, not instead of, classic custom skills. Amazon's original
+[February 2025 developer announcement](https://developer.amazon.com/en-US/blogs/alexa/alexa-skills-kit/2025/02/new-alexa-announce-blog)
+named three SDKs for this: an Action SDK, a Web Action SDK, and a Multi-Agent SDK. That naming is
+announcement-era and has since changed. As of July 2026, Amazon's
+[Alexa+ for Builders](https://developer.amazon.com/alexaplus/) page names a different lineup: a
+**Category SDK** (reservations, food ordering, home services, booking, ticketing, ride booking),
+an **MCP Toolkit** (wiring in an existing MCP server with minimal changes), and a **smart-home AI
+toolkit** for device manufacturers. Neither current page mentions the Feb 2025 names at all, so
+treat those three original names as historical, not as something you can go build against today.
+
+More importantly, the page states plainly that access is gated: "Alexa+ for Builders is currently
+available to select partners working directly with our team." This isn't a program a new project
+can sign up for and start using; it's an invitation-only track run directly with Amazon.
 
 Verified: ASK-based custom skills keep working in 2026, and Amazon isn't forcing a migration. Not
-fully verified: how much of this page becomes unnecessary if your use case is a plain
-task-completion flow the Action SDK already covers end to end. If the project is "answer a
-question and show a screen using your own data and your own model," which is what this page is
-for, that's still a custom skill with a Lambda backend calling Bedrock yourself; the Action SDK
-family targets task execution against partner APIs, not general voice+screen apps with a data
-source you own. Confirm against the current
-[Alexa+ developer program](https://developer.amazon.com/en-US/alexa/alexa-plus) page before
-committing a new project's direction, since this area moves faster than the rest of the platform.
+fully verified: how much of this page becomes unnecessary for a project that does get a partner
+invitation and whose use case is a plain task-completion flow the Category SDK already covers end
+to end. For everyone else, and for the "answer a question and show a screen using your own data
+and your own model" shape this page is for, none of that changes anything: that's still a custom
+skill with a Lambda backend calling Bedrock yourself, because the Alexa+ toolkits target task
+execution against partner APIs or existing MCP servers, not a general voice+screen app built on a
+data source you own, and you cannot currently opt into them without going through Amazon's partner
+process. Confirm current toolkit names and eligibility against the
+[Alexa+ for Builders](https://developer.amazon.com/alexaplus/) page before committing a new
+project's direction, since this area moves faster than the rest of the platform.
 
 ## Reference architecture
 
@@ -379,13 +441,13 @@ after the structured response comes back.
 
 - [Send the User a Progressive Response](https://developer.amazon.com/en-US/docs/alexa/custom-skills/send-the-user-a-progressive-response.html), Amazon (8-second budget, progressive response limits)
 - [About the Proactive Events API](https://developer.amazon.com/en-US/docs/alexa/smapi/proactive-events-api.html), Amazon
-- [alexa-samples/proactive-events-demo](https://github.com/alexa-samples/proactive-events-demo), Amazon
+- [alexa-samples/proactive-events-demo](https://github.com/alexa-samples/proactive-events-demo), Amazon (archived December 2023, pattern reference only)
 - [aws-sdk-bedrockruntime, docs.rs](https://docs.rs/crate/aws-sdk-bedrockruntime/latest), version 1.138.0 verified 2026-07
-- [Amazon Bedrock model IDs reference](https://docs.aws.amazon.com/bedrock/latest/userguide/model-ids.html), AWS
+- [Amazon Bedrock models at a glance](https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html), AWS (model IDs and lifecycle status, verified 2026-07-28)
 - [Quotas for Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/quotas.html), AWS
 - [AWS Lambda pricing](https://aws.amazon.com/lambda/pricing/), AWS
 - [Amazon Bedrock pricing](https://aws.amazon.com/bedrock/pricing/), AWS
-- [boto3 bedrock-runtime `converse`](https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/bedrock-runtime/client/converse.html), AWS
+- [boto3 bedrock-runtime `converse`](https://docs.aws.amazon.com/boto3/latest/reference/services/bedrock-runtime/client/converse.html), AWS
 - [alexa/alexa-skills-kit-sdk-for-python](https://github.com/alexa/alexa-skills-kit-sdk-for-python), Amazon
-- [Introducing AI-native SDKs for Alexa+](https://developer.amazon.com/en-US/blogs/alexa/alexa-skills-kit/2025/02/new-alexa-announce-blog), Amazon developer blog, February 2025
-- [Alexa+ developer program](https://developer.amazon.com/en-US/alexa/alexa-plus), Amazon
+- [Introducing AI-native SDKs for Alexa+](https://developer.amazon.com/en-US/blogs/alexa/alexa-skills-kit/2025/02/new-alexa-announce-blog), Amazon developer blog, February 2025 (announcement-era SDK naming, superseded)
+- [Alexa+ for Builders](https://developer.amazon.com/alexaplus/), Amazon, verified 2026-07-28

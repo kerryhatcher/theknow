@@ -83,12 +83,17 @@ Echo Show ── mic/touch ──> Alexa cloud (ASR/NLU) ── IntentRequest/Us
 
 This matches the reference architecture and latency guidance in
 [AI integration](ai-integration.md#reference-architecture), and the Lambda-first, verify-the-
-skill-ID posture in [Backend in Rust](backend-rust.md#lambda-still-owes-you-one-check).
+skill-ID posture in [Backend in Rust](backend-rust.md#lambda-still-owes-you-one-check). The
+shape is language-agnostic, Rust is this wiki's own choice; a Node.js or Python fulfillment
+endpoint follows the same diagram with the official `ask-sdk` in place of hand-rolled
+structs.
 
 ## First week: build in this order
 
 1. **`ask new`**, Custom skill, self-hosted Lambda, and get one intent round-tripping
-   through the console simulator with plain-text speech. No display, no model, no real data.
+   through the console simulator with plain-text speech. No display, no model, no real
+   data. Deploy the Lambda and register its ARN as the skill's endpoint before moving on;
+   step 2 needs a live endpoint to reach.
 2. **Put a hardcoded APL document on a real Echo Show.** Skip the model and your own data
    entirely, one `RenderDocument` with static numbers, driven by the same intent. The
    console preview does not faithfully reproduce on-device rendering, so get onto hardware
@@ -120,12 +125,20 @@ skill-ID posture in [Backend in Rust](backend-rust.md#lambda-still-owes-you-one-
   to leave off.
 - A skill manifest pointing at the right Lambda ARN but no Alexa Skills Kit trigger granting
   invoke permission, the most common "why doesn't my skill respond at all" bug.
-- Total response size (speech, directives, session attributes) capped at 24 KB; a large
-  inline APL document plus a data-heavy datasource can hit that before you expect it.
-- Assuming the Alexa+ generative SDKs (Action, Web Action, Multi-Agent) replace this stack.
-  They target partner task-completion, not a skill with your own data and your own model;
-  classic custom skills keep working in 2026, but re-check Amazon's current framing before
-  betting a new project on either path.
+- Total response size (speech, directives, session attributes) capped at 120 KB, per
+  Amazon's [Request and Response JSON
+  Reference](https://developer.amazon.com/en-US/docs/alexa/custom-skills/request-and-response-json-reference.html);
+  a large inline APL document plus a data-heavy datasource can still hit that before you
+  expect it.
+- Assuming Alexa+ replaces this stack. The February 2025 announcement named an Action SDK,
+  Web Action SDK, and Multi-Agent SDK; Amazon's current [builder
+  page](https://developer.amazon.com/alexaplus/) names a different lineup instead, a
+  Category SDK, an MCP Toolkit, and a smart-home AI toolkit, and states the program is
+  available only to select partners working directly with Amazon, not to the public.
+  Either naming targets partner task-completion, not a skill with your own data and your
+  own model. Classic custom skills with ASK and APL remain supported and remain the right
+  path for a new project of this shape; re-check Amazon's current framing before betting on
+  Alexa+ instead.
 
 ## Pages
 
