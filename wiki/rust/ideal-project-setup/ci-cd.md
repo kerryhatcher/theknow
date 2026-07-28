@@ -29,6 +29,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Default every job to read-only. Add narrowly scoped write permissions only
+# to the release/provenance job that needs them.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: test (${{ matrix.os }})
@@ -46,7 +51,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: just
-      - run: just test
+      - run: cargo test --locked
 
   lint:
     name: lint
@@ -61,8 +66,8 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: just
-      - run: just fmt
-      - run: just lint
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
 
   msrv:
     name: msrv (1.85.1)
@@ -76,7 +81,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: just
-      - run: just test
+      - run: cargo test --locked
 
   security:
     name: security
@@ -90,8 +95,8 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: just,cargo-audit,cargo-deny,cargo-geiger
-      - run: just audit
-      - run: just deny
+      - run: cargo audit
+      - run: cargo deny check
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
@@ -164,9 +169,27 @@ semver tag:
 This prevents a compromised action release from injecting malicious code into
 your CI pipeline. Dependabot will open PRs to update the pinned SHAs.
 
+Also enable the repository or organization policy that requires full-length
+SHA pins, restricts allowed third-party actions/reusable workflows, and make
+workflow permissions explicit. A workflow triggered by an untrusted fork must
+not receive secrets or a write-capable token; release/publishing workflows
+must only run from protected refs and environments.
+
+## Evidence retention and scheduled checks
+
+PR checks prevent regressions introduced by a change, but a dependency may be
+disclosed as vulnerable on an otherwise quiet project. Add scheduled runs for
+RustSec/license checks and record alert triage. Retain release-job logs,
+checksums, SBOMs, provenance/signatures, and test reports for the length of
+the support period or contractual retention requirement. Treat CI artifacts as
+potentially sensitive: redact logs and avoid uploading secrets, production
+data, or full core dumps.
+
 ## Further reading
 
 - [GitHub Actions documentation](https://docs.github.com/en/actions)
 - [dtolnay/rust-toolchain](https://github.com/dtolnay/rust-toolchain)
 - [Swatinem/rust-cache](https://github.com/Swatinem/rust-cache)
 - [taiki-e/install-action](https://github.com/taiki-e/install-action)
+- [GitHub Actions secure use reference](https://docs.github.com/en/actions/reference/security/secure-use)
+- [GitHub action pinning policy](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository)

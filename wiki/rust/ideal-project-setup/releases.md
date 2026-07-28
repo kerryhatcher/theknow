@@ -1,7 +1,9 @@
 # Release Automation
 
-Releases should be boring. Every tag, GitHub release, binary artifact, and
-crates.io publish should happen without anyone touching a keyboard.
+Releases should be boring and verifiable. Automate the mechanical work, but
+retain an explicit, accountable approval for a production release. Every tag,
+GitHub release, binary artifact, and crates.io publish should be produced by
+the protected release workflow—not by a developer's laptop.
 
 ## Conventional Commits
 
@@ -118,6 +120,12 @@ The default `GITHUB_TOKEN` cannot trigger other workflows. Using a GitHub App
 token ensures that when release-please creates a tag, the downstream build
 and publish workflows actually run.
 
+Use a dedicated GitHub App with only the permissions it needs. Keep its
+private key in a protected release environment, restrict who may approve that
+environment, and record the release approver. Prefer OIDC for cloud publishing
+where the target registry supports it; never expose publish credentials to
+pull-request workflows.
+
 ## Cross-platform binary builds
 
 After the release is created, build binaries for every target platform:
@@ -217,9 +225,61 @@ Copy-Item README.md,LICENSE-MIT,LICENSE-APACHE -Destination $STAGE
 Compress-Archive -Path $STAGE -DestinationPath "$STAGE.zip"
 ```
 
+## Checksums, SBOM, and provenance
+
+A release is not complete when it is uploaded. Publish the evidence users
+need to verify what they downloaded:
+
+```bash
+# Generate a deterministic checksum manifest for every release asset.
+sha256sum my-crate-*.tar.gz my-crate-*.zip > SHA256SUMS
+
+# Produce a CycloneDX SBOM for the release workspace/feature set.
+cargo cyclonedx --format json --describe binaries
+```
+
+Generate the SBOM in the release build, upload it with the artifacts, and
+state which target and Cargo features it describes. `cargo-cyclonedx` can use
+Cargo metadata as well as the lockfile and can omit development dependencies,
+which makes it more useful than a lockfile-only report for a shipped binary.
+
+For GitHub-hosted releases, generate an artifact attestation after building
+each binary. It cryptographically binds the artifact digest to the repository,
+commit, and workflow identity. This is provenance—not a guarantee that the
+artifact has no vulnerability.
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+# Pin the action to a reviewed full commit SHA in a real workflow.
+- name: Attest release artifact
+  uses: actions/attest-build-provenance@v2
+  with:
+    subject-path: dist/my-crate-*
+```
+
+Tell users how to verify the provenance and checksum, including the expected
+repository owner and release workflow:
+
+```bash
+sha256sum --check SHA256SUMS
+gh attestation verify ./my-crate --owner YOUR_ORGANIZATION \
+  --signer-workflow YOUR_ORGANIZATION/YOUR_REPOSITORY/.github/workflows/release.yml
+```
+
+The exact GitHub attestation action/version evolves; use the current official
+GitHub guidance, pin the selected action by full SHA, and test the verification
+command before documenting it as a release guarantee.
+
 ## Further reading
 
 - [Conventional Commits specification](https://www.conventionalcommits.org)
 - [release-please documentation](https://github.com/googleapis/release-please)
 - [cargo-auditable documentation](https://github.com/rust-secure-code/cargo-auditable)
 - [crates.io publishing guide](https://doc.rust-lang.org/cargo/reference/publishing.html)
+- [cargo-cyclonedx documentation](https://docs.rs/cargo-cyclonedx/)
+- [GitHub artifact attestations](https://docs.github.com/en/actions/concepts/security/artifact-attestations)
+- [GitHub: verify attestations from a reusable workflow](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/increase-security-rating)

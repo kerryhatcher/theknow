@@ -4,19 +4,21 @@
 
 ## Rust
 
-* [Production Rust projects](rust/README.md)
-  * [Project scaffolding](rust/scaffolding.md)
-  * [Code quality gates](rust/code-quality.md)
-  * [Testing strategy](rust/testing.md)
-  * [Supply chain security](rust/supply-chain.md)
-  * [Security scanning](rust/security-scanning.md)
-  * [MSRV management](rust/msrv.md)
-  * [CI/CD pipeline](rust/ci-cd.md)
-  * [Release automation](rust/releases.md)
-  * [Dependency management](rust/dependencies.md)
-  * [Local development](rust/local-dev.md)
-  * [Security policy](rust/security-policy.md)
-  * [Project governance](rust/governance.md)
+* [Production Rust projects](rust/ideal-project-setup/README.md)
+  * [Enterprise readiness guide](rust/ideal-project-setup/enterprise-readiness.md)
+  * [Secure development lifecycle](rust/ideal-project-setup/secure-development.md)
+  * [Project scaffolding](rust/ideal-project-setup/scaffolding.md)
+  * [Code quality gates](rust/ideal-project-setup/code-quality.md)
+  * [Testing strategy](rust/ideal-project-setup/testing.md)
+  * [Supply chain security](rust/ideal-project-setup/supply-chain.md)
+  * [Security scanning](rust/ideal-project-setup/security-scanning.md)
+  * [MSRV management](rust/ideal-project-setup/msrv.md)
+  * [CI/CD pipeline](rust/ideal-project-setup/ci-cd.md)
+  * [Release automation](rust/ideal-project-setup/releases.md)
+  * [Dependency management](rust/ideal-project-setup/dependencies.md)
+  * [Local development](rust/ideal-project-setup/local-dev.md)
+  * [Security policy](rust/ideal-project-setup/security-policy.md)
+  * [Project governance](rust/ideal-project-setup/governance.md)
 
 ## Python
 

@@ -2,7 +2,34 @@
 
 Governance documents set expectations for how the project is run, how
 contributors are expected to behave, and what rights users and contributors
-have.
+have. For a project that others depend on, governance also makes continuity
+auditable: users should know who can change the project, who can release it,
+and what happens if a maintainer leaves or an urgent security decision is
+needed.
+
+## Governance and continuity
+
+Add a short `GOVERNANCE.md` once the project has more than one active
+maintainer or intends to be a long-lived dependency. It need not be
+bureaucratic. At minimum, document:
+
+- Maintainer roles and how people gain or lose them; use role/team accounts
+  rather than a single individual's credentials.
+- Decision-making (consensus, maintainer vote, or designated lead), tie-breaks,
+  and how significant decisions are recorded.
+- CODEOWNER areas: release workflows, dependency policy, `unsafe`/FFI,
+  authentication/authorization, cryptography, and security policy deserve
+  named expert review.
+- A release owner, a security-response owner, and a break-glass process with
+  retrospective review. Emergency access must be narrow, time-limited where
+  possible, and logged.
+- A succession plan: at least two people with appropriate repository and
+  package-registry recovery access, MFA, and a documented handover path.
+
+Publish a support policy (in `SUPPORT.md` or the README) that states supported
+versions, support duration, platform/support tiers, contact channels, and
+deprecation policy. This is a maintenance commitment, not an SLA unless the
+project is resourced to provide one.
 
 ## Code of Conduct
 
@@ -113,13 +140,21 @@ should answer every question they might have.
 
 On GitHub, protect the `main` branch:
 
-1. Go to **Settings → Branches → Add branch protection rule**.
-2. Set the branch name pattern to `main`.
-3. Enable:
+1. Use a repository or organization **ruleset** (or branch protection rule)
+   targeting `main` and release branches.
+2. Enable:
    - **Require a pull request before merging**
+   - **Require at least one independent approving review**; require CODEOWNER
+     review for sensitive paths.
    - **Require status checks to pass before merging** (select all CI jobs)
    - **Require branches to be up to date**
+   - **Require conversation resolution**, dismiss stale approvals, restrict
+     who can push, and block force-pushes/deletion.
    - **Do not allow bypassing the above settings**
+
+3. Where practical, require verified commit signatures and a linear history.
+   Do not make a signature rule that prevents necessary automated release
+   commits; test bots and release tooling before enforcing it.
 
 This ensures every change is reviewed, tested, and up to date before it
 reaches `main`.
@@ -129,4 +164,5 @@ reaches `main`.
 - [Contributor Covenant](https://www.contributor-covenant.org)
 - [GitHub: Setting up your project for healthy contributions](https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions)
 - [GitHub: Managing branch protection rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches)
+- [GitHub rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets)
 - [Rust API Guidelines: Crate metadata](https://rust-lang.github.io/api-guidelines/necessities.html)

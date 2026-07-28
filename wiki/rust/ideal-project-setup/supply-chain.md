@@ -5,6 +5,11 @@ largest attack surfaces. Every crate you depend on is a potential vector for
 malicious code, vulnerable libraries, or license violations. Three tools work
 together to manage this risk.
 
+No tool can prove that a dependency is safe. The policy goal is to make every
+accepted dependency and exception explicit, reviewable, and reversible. Keep
+the policy files and the lockfile in version control; use `--locked` in CI and
+release builds so the resolved graph is the graph that was reviewed.
+
 ## `cargo-deny`: license, ban, and duplicate checking
 
 `cargo-deny` checks your dependency tree against a policy file (`deny.toml`).
@@ -132,6 +137,14 @@ criteria = "safe-to-run"
 3. **Import audits** — Google and Mozilla maintain public audit sets.
    Importing them covers the most common crates (serde, quote, syn, etc.).
 
+### Exemption discipline
+
+An exemption is a recorded risk acceptance, not an audit. Require an exact
+version, the scope/criterion, a concise reason, an owner, and an expiry or
+review date in the `notes` field or linked issue. Review exemptions on every
+dependency update and at least quarterly. Prefer a differential audit of the
+new version over perpetually extending an exemption.
+
 ### Files
 
 ```
@@ -202,3 +215,5 @@ jobs:
 - [cargo-vet documentation](https://mozilla.github.io/cargo-vet/)
 - [cargo-audit documentation](https://github.com/rustsec/rustsec)
 - [RustSec Advisory Database](https://rustsec.org)
+- [Cargo Vet configuration and policy](https://mozilla.github.io/cargo-vet/config.html)
+- [NIST SSDF: third-party software component practices](https://doi.org/10.6028/NIST.SP.800-218)
