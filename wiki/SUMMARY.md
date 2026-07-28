@@ -12,6 +12,16 @@
   * [Calling an LLM or agent from a skill](alexa/skills-and-displays/ai-integration.md)
   * [Testing, certification, and distribution](alexa/skills-and-displays/testing-and-publishing.md)
 
+## Cloudflare
+
+* [SonicJS CMS and Astro blog](cloudflare/sonicjs-astro-blog/README.md)
+  * [Local development](cloudflare/sonicjs-astro-blog/local-development.md)
+  * [Deployments and domains](cloudflare/sonicjs-astro-blog/deployment.md)
+  * [Authentication and RBAC](cloudflare/sonicjs-astro-blog/authentication-and-rbac.md)
+  * [Content and API reference](cloudflare/sonicjs-astro-blog/content-and-api.md)
+  * [Troubleshooting](cloudflare/sonicjs-astro-blog/troubleshooting.md)
+  * [Official source material](cloudflare/sonicjs-astro-blog/official-references.md)
+
 ## Rust
 
 * [Production Rust projects](rust/ideal-project-setup/README.md)
@@ -41,4 +51,19 @@
   * [Detection quality](python/python-supply-chain-security/detection-quality.md)
   * [LLM triage](python/python-supply-chain-security/llm-triage.md)
   * [Research and datasets](python/python-supply-chain-security/research-and-datasets.md)
-* [Python GUI frameworks](python/GUI.md)
+* [Python GUI frameworks](python/GUI/README.md)
+  * [Cross-platform ranking](python/GUI/ranking.md)
+  * [Kivy](python/GUI/kivy.md)
+  * [BeeWare and Toga](python/GUI/beeware-toga.md)
+  * [Flet](python/GUI/flet.md)
+  * [Qt for Python: PySide and PyQt](python/GUI/qt-for-python.md)
+  * [Tkinter](python/GUI/tkinter.md)
+  * [Dear PyGui](python/GUI/dear-pygui.md)
+  * [NiceGUI](python/GUI/nicegui.md)
+  * [Reflex](python/GUI/reflex.md)
+  * [Remi](python/GUI/remi.md)
+  * [Eel](python/GUI/eel.md)
+  * [wxPython](python/GUI/wxpython.md)
+  * [PyGObject and GTK](python/GUI/pygobject-gtk.md)
+  * [pywebview](python/GUI/pywebview.md)
+  * [Textual](python/GUI/textual.md)
