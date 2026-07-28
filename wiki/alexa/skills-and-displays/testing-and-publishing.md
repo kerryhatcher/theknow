@@ -46,7 +46,8 @@ at each viewport profile, not just the one you designed against. This is the che
 layout that only works at one screen size. It still isn't the on-device renderer, so animation
 timing, tap-zone accuracy, and scroll feel are unverified until real hardware.
 
-**Physical device (Echo Show):** required before certification for any skill with a display.
+**Physical device (Echo Show):** strongly recommended before certification for any skill with a
+display.
 Validate touch hit zones against the visual boundary of each interactive component, play through
 your animations at normal speed, and confirm response latency feels acceptable in a live
 conversation. Also run every intent on a screenless device (an Echo or Echo Dot signed into the same
@@ -57,13 +58,13 @@ behavior that varies across the installed fleet; that only shows up after wider 
 
 **Key caveat on the console simulator:** it is an approximation. The APL preview does not faithfully
 reproduce on-device rendering quality, touch hit zones, animation timing, or gesture scrolling. A
-skill with a display *must* be validated on real hardware before certification. Simulators catch
-schema errors and obvious intent mismatches; they don't catch pixel-alignment bugs or touch-zone
-dead zones that will frustrate users on an actual Show.
+skill with a display should be validated on real hardware before certification. Amazon permits
+certification testing in the Console Test page without a device, but simulators do not catch
+pixel-alignment bugs or touch-zone dead zones that will frustrate users on an actual Show.
 
 For a pure voice-only skill (no APL), the console simulator is sufficient for certification testing.
-For any skill with a display, you need hardware, including a screenless device to confirm the
-fallback path.
+For any skill with a display, use hardware when possible, including a screenless device to confirm
+the fallback path.
 
 ## Beta testing
 

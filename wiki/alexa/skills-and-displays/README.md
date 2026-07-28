@@ -41,7 +41,7 @@ Read this before you design anything. Every sibling page returns to these.
   handler. See [APL displays](apl-displays.md#detect-the-screen-before-you-send-it).
 - **A development-stage skill needs no certification, but only runs on your own account.**
   No review, no waiting, but "your own account" means every device signed into it, not a
-  secret single device. Certification (5+ business days of review) is only required to
+  secret single device. Certification review is only required to
   reach the public Alexa Skills Store. Beta testing sits in between, up to 500 invited
   testers, no certification. See
   [Setup and tooling](skill-setup-and-tooling.md#skill-stages-and-who-can-use-them) and
@@ -56,7 +56,7 @@ Read this before you design anything. Every sibling page returns to these.
 ## Recommended architecture
 
 Put a Rust Lambda directly behind the Alexa Skills Kit trigger, so Amazon owns transport
-auth and TLS and you never touch request signing. Inside the handler: verify the skill ID,
+auth and TLS and you never touch request signing. Enable skill-ID verification on that trigger,
 dispatch on `request.type`, and for anything that needs real data, fetch it yourself before
 calling a model, then hand the model only the numbers and ask it to phrase a short sentence
 and a typed display payload in one structured call (Bedrock's Converse API with a forced
@@ -83,8 +83,8 @@ Echo Show ── mic/touch ──> Alexa cloud (ASR/NLU) ── IntentRequest/Us
 ```
 
 This matches the reference architecture and latency guidance in
-[AI integration](ai-integration.md#reference-architecture), and the Lambda-first, verify-the-
-skill-ID posture in [Backend in Rust](backend-rust.md#lambda-still-owes-you-one-check). The
+[AI integration](ai-integration.md#reference-architecture), and the Lambda trigger's skill-ID
+verification in [Backend in Rust](backend-rust.md#let-the-lambda-trigger-verify-the-skill-id). The
 shape is language-agnostic, Rust is this wiki's own choice; a Node.js or Python fulfillment
 endpoint follows the same diagram with the official `ask-sdk` in place of hand-rolled
 structs.
@@ -100,7 +100,7 @@ structs.
    console preview does not faithfully reproduce on-device rendering, so get onto hardware
    in week one, not right before certification.
 3. **Wire up the real fulfillment backend**: the serde request/response structs, the
-   skill-ID check, screen detection via `supportedInterfaces`, and a `TouchWrapper` that
+   trigger's skill-ID verification, screen detection via `supportedInterfaces`, and a `TouchWrapper` that
    fires a real `SendEvent` back to your handler.
 4. **Replace hardcoded numbers with your actual data source.** Still no model. Confirm the
    whole voice-plus-touch loop works end to end on real data before adding any AI latency
@@ -121,9 +121,8 @@ structs.
   eat most or all of the ~5.35-7.1 s endpoint budget before you've produced a word.
 - Putting the model in the data path ("look up the order status" inside the prompt) instead
   of fetching first and asking the model only to phrase the result.
-- Forgetting the Lambda still needs its own skill-ID check even after the Alexa Skills Kit
-  trigger is wired up; the trigger's scoping lives in a separate resource policy that's easy
-  to leave off.
+- Forgetting to enable skill-ID verification on the Alexa Skills Kit trigger; the trigger's
+  resource policy, not a handler check, is the production enforcement boundary.
 - A skill manifest pointing at the right Lambda ARN but no Alexa Skills Kit trigger granting
   invoke permission, the most common "why doesn't my skill respond at all" bug.
 - Total response size (speech, directives, session attributes) capped at 120 KB, per

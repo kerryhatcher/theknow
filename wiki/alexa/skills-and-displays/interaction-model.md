@@ -66,23 +66,25 @@ Source: [Choose the Invocation Name for a Custom Skill](https://developer.amazon
 
 An intent is a named action, "the thing the user wants to happen." You define custom intents
 (`GetTrailStatusIntent`, `SetDestinationIntent`) with their own sample utterances and slots.
-Alexa also sends your skill a fixed set of built-in requests and intents regardless of what
-you define, and a real skill has to handle all of them:
+Alexa sends lifecycle request types such as `LaunchRequest` and `SessionEndedRequest` when they
+occur. Built-in intents are different: include an intent in the interaction model before Alexa
+sends it to your service (except for interface-specific cases such as AudioPlayer controls).
+For a custom skill, `AMAZON.StopIntent` is required; Help, Cancel, and Fallback are strongly
+recommended when they fit the experience and must be handled if you include them.
 
 | Type | When it fires | If you skip it |
 |---|---|---|
 | `LaunchRequest` | User opens the skill with no specific ask ("Alexa, open trail status") | No welcome response; users who invoke the plain skill name get a dead end |
-| `AMAZON.HelpIntent` | User says "help" | Certification failure; this one is checked explicitly in functional testing |
+| `AMAZON.HelpIntent` | User asks for help, if included in the model | Give contextual help; recommended for a usable voice experience |
 | `AMAZON.StopIntent` | User says "stop" | Certification failure; the tester says "stop" and expects a clean, non-erroring response |
-| `AMAZON.CancelIntent` | User says "cancel" or "never mind" | Same as Stop, tested explicitly |
-| `AMAZON.FallbackIntent` | Speech doesn't match any of your intents well enough | Without it, an out-of-domain utterance either errors or silently falls through; Fallback gives you one place to say "I didn't get that" |
+| `AMAZON.CancelIntent` | User says "cancel" or "never mind," if included in the model | Usually exit or cancel the current task cleanly |
+| `AMAZON.FallbackIntent` | Speech doesn't match any of your intents well enough, if included in the model | Give one place to handle out-of-domain utterances |
 | `SessionEndedRequest` | Session is closing (timeout, error, or user exit) for a reason other than your own `shouldEndSession: true` | Nothing you do here reaches the user (no speech, no directives are honored), but skipping the handler means you miss the chance to log why the session died |
 
-A new interaction model in the developer console adds `AMAZON.HelpIntent`,
-`AMAZON.CancelIntent`, `AMAZON.StopIntent`, and `AMAZON.FallbackIntent` by default. Leaving
-them in the model isn't enough, your Lambda handler still has to branch on each one and return
-something sensible; an unhandled `AMAZON.FallbackIntent` that falls through to your generic
-"sorry" response is fine, one that throws an unhandled-match error is a certification failure.
+Quick-start templates can include common built-ins, but do not assume a new interaction model
+automatically adds them. Leaving an intent in the model isn't enough: your Lambda handler still
+has to return a sensible response for every intent you include. A generic fallback response is
+fine; an unhandled-match error is not.
 
 Amazon's own documentation is inconsistent about `AMAZON.NavigateHomeIntent`. The
 [Standard Built-in Intents](https://developer.amazon.com/en-US/docs/alexa/custom-skills/standard-built-in-intents.html)

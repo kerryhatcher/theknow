@@ -22,22 +22,21 @@ display layer. Target 2024.3 for a new project and move on. (Source:
 
 ## The document/datasource split
 
-An APL response is always two JSON objects, not one:
+An APL `RenderDocument` response has a required document and an optional datasource object:
 
-- **`document`**, the static layout: components, styles, named layouts, resource dimens. It
-  describes structure and appearance, never the actual numbers or strings a user sees.
-- **`datasources`**, the data you inject, bound into the document through
-  `mainTemplate.parameters` and `${payload...}` expressions.
+- **`document`**, the layout: components, styles, named layouts, resource dimensions, and any
+  static strings. It describes the structure and appearance.
+- **`datasources`**, optional data you inject, bound into the document through
+  `mainTemplate.parameters` and data-binding expressions such as `${payload...}`.
 
-This split exists so the expensive part (the document, potentially large, reused across
-requests) is cacheable, while the cheap part (a small data blob) changes on every turn. Host a
-document or package once at a URL you control (there is no developer-console upload feature
-for this, you self-host the JSON over HTTPS, S3 works fine), or reference an Amazon-maintained
-package like `alexa-layouts` by name, or ship it inline. On every later render you send only
-fresh `datasources` against the same document reference. That's the whole reason APL data
-binding exists instead of templating a full JSON tree in your backend on every turn, and it
-keeps your backend logic close to "build a data object," a much easier thing to unit test than
-"build a UI tree." (Source: [APL Package](https://developer.amazon.com/en-US/docs/alexa/alexa-presentation-language/apl-package.html))
+This split lets you keep the layout stable while changing only the data. A `RenderDocument`
+directive must contain either the complete APL document or a `Link` to a document saved in the
+Developer Console (`doc://alexa/apl/documents/<document-name>`); it cannot link to an arbitrary
+HTTPS-hosted JSON file. For a reusable layout, save the document in the Console, build the model,
+and send that `Link` with fresh `datasources` each time you render it. You can also ship the full
+document inline, or import an Amazon-maintained package such as `alexa-layouts`. Data binding
+keeps backend logic close to "build a data object," a much easier thing to unit test than "build
+a UI tree." (Source: [Alexa.Presentation.APL Interface Reference](https://developer.amazon.com/en-US/docs/alexa/alexa-presentation-language/apl-interface.html))
 
 The directive that carries both pieces to the device is
 `Alexa.Presentation.APL.RenderDocument`:
@@ -236,10 +235,11 @@ tool when the screen's *structure* changes (dashboard to detail view). It's the 
   token means the commands silently don't run, no error surfaced to your logs.
 - **`SetValue`**, inside `ExecuteCommands`, changes one component property (text, color,
   visibility) by `id`. The move for "the CPU metric just refreshed."
-- **Data-binding expressions**, `${dash.metrics[0].value}` does the "same layout, new
-  numbers" work for free just by sending fresh `datasources` against the same document.
-  Transformers can reshape or annotate data (text-to-speech markup, image sourcing) before it
-  hits the template.
+- **Data-binding expressions**, `${dash.metrics[0].value}` let a `RenderDocument` reuse the
+  same inline document or Console link with a fresh `datasources` object. They don't update an
+  already-rendered document on their own; use `ExecuteCommands` or the dynamic-list directives
+  when the screen must change without a full render. Transformers can reshape or annotate data
+  (text-to-speech markup, image sourcing) before it hits the template.
 
 Rule of thumb: component tree unchanged, use `ExecuteCommands`/`SetValue`. Structure changed,
 send a new `RenderDocument`.

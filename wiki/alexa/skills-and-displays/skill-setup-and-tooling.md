@@ -18,7 +18,9 @@ These three pieces together form a "Custom Alexa Skill," the general-purpose ski
 
 ### Two accounts, separate purposes
 
-You will need **both** an Amazon developer account and an AWS account. They are not the same.
+You need an Amazon developer account. You also need an AWS account when you host the endpoint or
+use AWS services yourself; Alexa-hosted skills do not require your own AWS account. They are not
+the same kind of account.
 
 | Account | What it is | Why you need it | Cost |
 |---------|-----------|-----------------|------|
@@ -35,7 +37,7 @@ A skill has three deployment stages, and the boundary between them matters.
 |-------|----------|------------------------|----------------|------------|
 | **Development** | Any device signed into the **same Amazon developer account** that created the skill, once you enable the skill for testing. Also any testers you explicitly invite via beta testing (can be different accounts). | No | No | Your own devices, family testing, prototyping. Once enabled for testing, a skill is available on *every* device registered to that account, not just the one you built on. This is the path for personal dashboards. |
 | **Certified** | Same as development; certification doesn't change who can reach the skill. | Yes, already passed. | No, not yet. | You chose "Certify now, publish later" instead of certifying and publishing in one step. Certification is done and the review is behind you, but the skill is deliberately held back from the store until you promote it, useful for lining up a launch date. |
-| **Live** (Published) | Anyone, discoverable in the Alexa Skills Store. | Yes, 5+ business days of Amazon review. | Yes | Public distribution. Required if you want strangers to find your skill. |
+| **Live** (Published) | Anyone, discoverable in the Alexa Skills Store. | Yes, Amazon certification review. | Yes | Public distribution. Required if you want strangers to find your skill. |
 
 In day-to-day work you live in development stage; that's what you edit and redeploy freely while building. Certified is a holding state you pass through only near launch, not a stage to develop against. See [testing-and-publishing.md](testing-and-publishing.md#versioning-and-safe-change) for how promotion between stages works.
 

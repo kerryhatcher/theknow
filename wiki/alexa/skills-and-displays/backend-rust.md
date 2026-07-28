@@ -44,32 +44,19 @@ verify the `Signature-256` header against the raw request body, and reject anyth
 web-service doc above.
 {% endhint %}
 
-## Lambda still owes you one check
+## Let the Lambda trigger verify the Skill ID
 
-Amazon authenticating the *invocation* is not the same as Amazon authenticating that the
-request belongs to *your* skill. The Alexa Skills Kit trigger on your Lambda can be scoped
-to one Skill ID, but that scoping happens in the Lambda resource policy, a separate piece of
-config from your code, and it's easy to leave off or misconfigure. Belt and suspenders: check
-it yourself, in the handler, every time.
+Configure the Alexa Skills Kit trigger with skill-ID verification and your Skill ID. Amazon
+recommends this setting: the Lambda resource policy then rejects requests from other skills
+before the function runs, so the handler does not need to reimplement request verification.
+Keep the trigger scoped to the skill when you deploy or replace the function; without it, the
+function's resource policy can allow a broader set of Alexa invocations.
 
-```rust
-const EXPECTED_SKILL_ID: &str = "amzn1.ask.skill.REPLACE-WITH-YOUR-SKILL-ID";
-
-fn verify_skill_id(envelope: &serde_json::Value) -> Result<(), &'static str> {
-    let app_id = envelope["context"]["System"]["application"]["applicationId"]
-        .as_str()
-        .unwrap_or_default();
-    if app_id != EXPECTED_SKILL_ID {
-        return Err("application id mismatch");
-    }
-    Ok(())
-}
-```
-
-Check `context.System.application.applicationId` (present on every request type) rather
-than only `session.application.applicationId` (absent on some). Do this before you branch on
-`request.type`, not after. It's two lines and it's the one thing standing between "my Lambda"
-and "anyone's Lambda that happens to share this ARN."
+An in-handler `context.System.application.applicationId` check is useful only when you have
+intentionally disabled trigger verification (for example, a test function shared by many
+skills). Treat that as an exception and validate against an explicit allowlist before dispatch.
+For a normal production skill, enable the trigger setting rather than relying on application
+code as the enforcement boundary.
 
 ## The request and response contract
 
@@ -271,8 +258,6 @@ tracing-subscriber = "0.3"
 use lambda_runtime::{run, service_fn, Error, LambdaEvent};
 use serde_json::{json, Value};
 
-const SKILL_ID: &str = "amzn1.ask.skill.REPLACE-WITH-YOUR-SKILL-ID";
-
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     tracing_subscriber::fmt().json().init();
@@ -281,14 +266,6 @@ async fn main() -> Result<(), Error> {
 
 async fn handler(event: LambdaEvent<Value>) -> Result<Value, Error> {
     let envelope = event.payload;
-
-    let app_id = envelope["context"]["System"]["application"]["applicationId"]
-        .as_str()
-        .unwrap_or_default();
-    if app_id != SKILL_ID {
-        // Return a valid, speakable response rather than an Err; see Error handling below.
-        return Ok(end_response("Sorry, something went wrong."));
-    }
 
     let request_type = envelope["request"]["type"].as_str().unwrap_or_default();
 
