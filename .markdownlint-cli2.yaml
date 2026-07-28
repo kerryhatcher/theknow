@@ -1,0 +1,14 @@
+# Keep the linter focused on structural consistency. GitBook permits HTML-like
+# blocks, and prose/documentation links should not be constrained to 80 chars.
+globs:
+  - "README.md"
+  - "wiki/**/*.md"
+
+config:
+  default: true
+  MD013: false # Line length
+  MD033: false # Inline HTML and GitBook block syntax
+  MD024: false # Repeated section names across independently readable docs
+  MD036: false # Existing callout-style emphasis
+  MD040: false # Existing unlabeled text/code fences
+  MD060: false # Existing compact/aligned table conventions
