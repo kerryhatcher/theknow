@@ -22,8 +22,8 @@ You will need **both** an Amazon developer account and an AWS account. They are 
 
 | Account | What it is | Why you need it | Cost |
 |---------|-----------|-----------------|------|
-| **Amazon Developer** | Your identity in Amazon's developer ecosystem. Created at https://developer.amazon.com. | Required to create and test skills in the Developer Console, interact with the Skill Management API, and access ASK CLI. | Free. |
-| **AWS Account** | Your identity in Amazon Web Services (EC2, Lambda, S3, DynamoDB, etc.). Created at https://aws.amazon.com. | Required if you host your backend on AWS Lambda or use other AWS services (DynamoDB for sessions, S3 for assets). **Not required if you use Alexa-hosted skills or a self-managed HTTPS server elsewhere.** | Free tier: 1M Lambda requests/month, 400,000 GB-seconds/month. After free tier, ~$0.20 per 1M requests + compute time. See [AWS Lambda pricing](https://aws.amazon.com/lambda/pricing/). |
+| **Amazon Developer** | Your identity in Amazon's developer ecosystem. Created at <https://developer.amazon.com>. | Required to create and test skills in the Developer Console, interact with the Skill Management API, and access ASK CLI. | Free. |
+| **AWS Account** | Your identity in Amazon Web Services (EC2, Lambda, S3, DynamoDB, etc.). Created at <https://aws.amazon.com>. | Required if you host your backend on AWS Lambda or use other AWS services (DynamoDB for sessions, S3 for assets). **Not required if you use Alexa-hosted skills or a self-managed HTTPS server elsewhere.** | Free tier: 1M Lambda requests/month, 400,000 GB-seconds/month. After free tier, ~$0.20 per 1M requests + compute time. See [AWS Lambda pricing](https://aws.amazon.com/lambda/pricing/). |
 
 The Developer account runs the console and skill metadata. The AWS account runs your code. You link them via `ask configure` (the CLI stores your credentials for both).
 
@@ -44,7 +44,7 @@ Critical implication: if you leave a skill enabled for testing in development st
 
 ## The Alexa Developer Console
 
-All skill configuration, testing, and submission happens at https://developer.amazon.com/alexa/console/ask.
+All skill configuration, testing, and submission happens at <https://developer.amazon.com/alexa/console/ask>.
 
 | Section | What you do |
 |---------|------------|
@@ -62,6 +62,7 @@ Start here to understand the skill's configuration shape, but the console is rea
 The Alexa Skills Kit CLI (`ask-cli`) is the primary way to create, build, and deploy skills locally. **Version 2.x is current** (v2 is the active branch; v1 projects must upgrade before deploying).
 
 Install:
+
 ```bash
 npm install -g ask-cli
 ask configure
@@ -79,6 +80,7 @@ ask smapi get-interaction-model   # Query the live interaction model via the Ski
 ```
 
 Example workflow:
+
 ```bash
 ask new --skill-name my-dashboard --runtime python --template hello-world
 cd my-dashboard

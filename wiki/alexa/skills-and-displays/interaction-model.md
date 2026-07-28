@@ -369,27 +369,27 @@ Source: [Introducing AI-native SDKs for Alexa+](https://developer.amazon.com/en-
 
 ## Related pages
 
-* [Skill setup and tooling](skill-setup-and-tooling.md), console, ASK CLI, and where the
+- [Skill setup and tooling](skill-setup-and-tooling.md), console, ASK CLI, and where the
   interaction model actually gets edited and deployed.
-* [APL and displays](apl-displays.md), what happens after an intent resolves and you need to
+- [APL and displays](apl-displays.md), what happens after an intent resolves and you need to
   put something on the Echo Show's screen.
-* [The fulfillment backend in Rust](backend-rust.md), the full request/response JSON envelope
+- [The fulfillment backend in Rust](backend-rust.md), the full request/response JSON envelope
   and the Rust types for it.
 
 ## Sources
 
-* [Choose the Invocation Name for a Custom Skill](https://developer.amazon.com/en-US/docs/alexa/custom-skills/choose-the-invocation-name-for-a-custom-skill.html)
-* [Standard Built-in Intents](https://developer.amazon.com/en-US/docs/alexa/custom-skills/standard-built-in-intents.html)
-* [Implement the Built-in Intents](https://developer.amazon.com/en-US/docs/alexa/custom-skills/implement-the-built-in-intents.html)
-* [Tips for Using Built-in Intents](https://developer.amazon.com/en-US/docs/alexa/interaction-model-design/tips-for-using-built-in-intents-for-your-skill.html)
-* [Functional Testing for a Custom Skill](https://developer.amazon.com/en-US/docs/alexa/custom-skills/functional-testing-for-a-custom-skill.html)
-* [Entity Resolution](https://developer.amazon.com/en-US/docs/alexa/custom-skills/entity-resolution.html)
-* [Entity Resolution for Custom Slot Types](https://developer.amazon.com/en-US/docs/alexa/custom-skills/entity-resolution-for-custom-slot-types.html)
-* [Dialog Interface Reference](https://developer.amazon.com/en-US/docs/alexa/custom-skills/dialog-interface-reference.html)
-* [Delegate Dialog to Alexa](https://developer.amazon.com/en-US/docs/alexa/custom-skills/delegate-dialog-to-alexa.html)
-* [Interaction Model Schema](https://developer.amazon.com/en-US/docs/alexa/smapi/interaction-model-schema.html)
-* [Manage Skill Session and Session Attributes](https://developer.amazon.com/en-US/docs/alexa/custom-skills/manage-skill-session-and-session-attributes.html)
-* [Develop Skills in Multiple Languages](https://developer.amazon.com/en-US/docs/alexa/custom-skills/develop-skills-in-multiple-languages.html)
-* [Introducing AI-native SDKs for Alexa+](https://developer.amazon.com/en-US/blogs/alexa/alexa-skills-kit/2025/02/new-alexa-announce-blog)
-* [Request Processing, ask-sdk-python](https://developer.amazon.com/en-US/docs/alexa/alexa-skills-kit-sdk-for-python/handle-requests.html)
-* [ask-sdk-python core API reference](https://alexa-skills-kit-python-sdk.readthedocs.io/en/latest/api/core.html)
+- [Choose the Invocation Name for a Custom Skill](https://developer.amazon.com/en-US/docs/alexa/custom-skills/choose-the-invocation-name-for-a-custom-skill.html)
+- [Standard Built-in Intents](https://developer.amazon.com/en-US/docs/alexa/custom-skills/standard-built-in-intents.html)
+- [Implement the Built-in Intents](https://developer.amazon.com/en-US/docs/alexa/custom-skills/implement-the-built-in-intents.html)
+- [Tips for Using Built-in Intents](https://developer.amazon.com/en-US/docs/alexa/interaction-model-design/tips-for-using-built-in-intents-for-your-skill.html)
+- [Functional Testing for a Custom Skill](https://developer.amazon.com/en-US/docs/alexa/custom-skills/functional-testing-for-a-custom-skill.html)
+- [Entity Resolution](https://developer.amazon.com/en-US/docs/alexa/custom-skills/entity-resolution.html)
+- [Entity Resolution for Custom Slot Types](https://developer.amazon.com/en-US/docs/alexa/custom-skills/entity-resolution-for-custom-slot-types.html)
+- [Dialog Interface Reference](https://developer.amazon.com/en-US/docs/alexa/custom-skills/dialog-interface-reference.html)
+- [Delegate Dialog to Alexa](https://developer.amazon.com/en-US/docs/alexa/custom-skills/delegate-dialog-to-alexa.html)
+- [Interaction Model Schema](https://developer.amazon.com/en-US/docs/alexa/smapi/interaction-model-schema.html)
+- [Manage Skill Session and Session Attributes](https://developer.amazon.com/en-US/docs/alexa/custom-skills/manage-skill-session-and-session-attributes.html)
+- [Develop Skills in Multiple Languages](https://developer.amazon.com/en-US/docs/alexa/custom-skills/develop-skills-in-multiple-languages.html)
+- [Introducing AI-native SDKs for Alexa+](https://developer.amazon.com/en-US/blogs/alexa/alexa-skills-kit/2025/02/new-alexa-announce-blog)
+- [Request Processing, ask-sdk-python](https://developer.amazon.com/en-US/docs/alexa/alexa-skills-kit-sdk-for-python/handle-requests.html)
+- [ask-sdk-python core API reference](https://alexa-skills-kit-python-sdk.readthedocs.io/en/latest/api/core.html)

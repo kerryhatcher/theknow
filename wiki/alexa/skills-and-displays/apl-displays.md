@@ -185,7 +185,7 @@ backend endpoint.
 }
 ```
 
-2. That fires an `Alexa.Presentation.APL.UserEvent` request at your backend, the same
+1. That fires an `Alexa.Presentation.APL.UserEvent` request at your backend, the same
    endpoint that handles `IntentRequest`. It carries `request.arguments` (exactly what you
    passed to `SendEvent`), `request.source` (the component's type, handler, and id), and a
    top-level `request.token`, the same document token from the `RenderDocument` that put this
@@ -217,7 +217,7 @@ fn handle_apl_user_event(request: &serde_json::Value) -> serde_json::Value {
 }
 ```
 
-3. Your handler decides what changed and responds with a new directive, either a fresh
+1. Your handler decides what changed and responds with a new directive, either a fresh
    `RenderDocument` for a real screen change, or something cheaper (next section) for a small
    update. No voice re-invocation needed; the loop is entirely tap-driven if you want it to be.
 
