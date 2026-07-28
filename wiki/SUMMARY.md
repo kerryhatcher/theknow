@@ -8,7 +8,7 @@
   * [Setup and tooling](alexa/skills-and-displays/skill-setup-and-tooling.md)
   * [The interaction model](alexa/skills-and-displays/interaction-model.md)
   * [Screen UI with APL](alexa/skills-and-displays/apl-displays.md)
-  * [The fulfillment backend in Rust](alexa/skills-and-displays/backend-rust.md)
+* [The fulfillment backend in Python](alexa/skills-and-displays/backend-python.md)
   * [Calling an LLM or agent from a skill](alexa/skills-and-displays/ai-integration.md)
   * [Testing, certification, and distribution](alexa/skills-and-displays/testing-and-publishing.md)
 

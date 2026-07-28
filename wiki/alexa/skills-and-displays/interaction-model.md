@@ -11,7 +11,7 @@ speech. A tap on an already-rendered screen is a separate path, an APL user even
 reaches your endpoint directly, without ASR or NLU involved at all, see
 [APL and displays](apl-displays.md) for that loop. This page covers the voice half of the
 contract; the request and response envelope your Lambda actually handles lives in
-[The fulfillment backend in Rust](backend-rust.md).
+[The fulfillment backend in Python](backend-python.md).
 
 ## The mental model
 
@@ -304,28 +304,28 @@ hand-written skill package needs to write it out explicitly, as above. See the
 [Interaction Model Schema](https://developer.amazon.com/en-US/docs/alexa/smapi/interaction-model-schema.html)
 for the full `prompts` entry shape.
 
-And the matching dispatch shape on the Rust side, request type first, then intent name. This is
-the same `match` shown in full in [The fulfillment backend in Rust](backend-rust.md); here's
-just the routing skeleton, including the APL user event arm a display skill needs alongside the
-voice arms:
+In Python, model the same routing as focused ASK SDK handlers. The SDK evaluates them in
+registration order, so a handler's predicate should be narrow:
 
-```rust
-let response_body = match request_type {
-    "LaunchRequest" => launch_response(),
-    "IntentRequest" => {
-        let intent_name = envelope["request"]["intent"]["name"].as_str().unwrap_or_default();
-        match intent_name {
-            "GetTrailStatusIntent" => get_trail_status(&envelope),
-            "AMAZON.HelpIntent" => help_response(),
-            "AMAZON.StopIntent" | "AMAZON.CancelIntent" => end_response("Goodbye!"),
-            "AMAZON.FallbackIntent" => end_response("I didn't catch that. Try asking about a trail."),
-            _ => end_response("Sorry, I didn't understand that."),
-        }
-    }
-    "Alexa.Presentation.APL.UserEvent" => handle_user_event(&envelope),
-    "SessionEndedRequest" => json!({ "response": {} }),
-    _ => end_response("Unsupported request type."),
-};
+```python
+class GetTrailStatusIntentHandler(AbstractRequestHandler):
+    def can_handle(self, handler_input):
+        return ask_utils.is_intent_name("GetTrailStatusIntent")(handler_input)
+
+    def handle(self, handler_input):
+        slots = handler_input.request_envelope.request.intent.slots
+        trail = slots.get("TrailName")
+        return get_trail_status(handler_input, trail)
+
+
+class AplUserEventHandler(AbstractRequestHandler):
+    def can_handle(self, handler_input):
+        return ask_utils.is_request_type(
+            "Alexa.Presentation.APL.UserEvent"
+        )(handler_input)
+
+    def handle(self, handler_input):
+        return handle_user_event(handler_input)
 ```
 
 `handle_user_event` never goes through this page's model at all, a button tap arrives as this
@@ -375,8 +375,8 @@ Source: [Introducing AI-native SDKs for Alexa+](https://developer.amazon.com/en-
   interaction model actually gets edited and deployed.
 - [APL and displays](apl-displays.md), what happens after an intent resolves and you need to
   put something on the Echo Show's screen.
-- [The fulfillment backend in Rust](backend-rust.md), the full request/response JSON envelope
-  and the Rust types for it.
+- [The fulfillment backend in Python](backend-python.md), ASK SDK handler structure,
+  response construction, persistence, and deployment.
 
 ## Sources
 

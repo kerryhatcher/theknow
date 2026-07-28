@@ -36,10 +36,10 @@ engineering estimate, not a spec:
 
 | Stage | Time | Source |
 |---|---|---|
-| Lambda cold start (Rust, ARM64, `provided.al2023`) | 50-150 ms cold, ~0 ms warm | Estimate, from Rust cold-start behavior generally; Amazon does not publish per-language cold-start figures. |
+| Lambda initialization (Python) | Measure it in your own deployment | Amazon does not publish a per-language Alexa figure; import only what you need and initialize reusable clients outside handlers. |
 | Your data fetch (DB, API, cache) | 50-500 ms | Depends entirely on your backend; budget it explicitly. |
 | The model call | 800 ms - 2 s (small model, short prompt) | Estimate; see latency strategies below. |
-| Response serialization + directive assembly | <10 ms | Negligible if you're building `serde_json::json!` literals, not templating a large document per request. |
+| Response serialization + directive assembly | Usually small; measure it | Keep APL documents static and build only compact datasource objects per request. |
 | **Total documented budget** | **~8 s** | [Progressive Response docs](https://developer.amazon.com/en-US/docs/alexa/custom-skills/send-the-user-a-progressive-response.html) |
 | **Sum of the rows above** | **~0.9-2.65 s consumed** | Adding the estimate rows together, low end to low end and high end to high end. |
 | **Realistic remaining budget for your code + the model call** | **~5.35-7.1 s** | 8 s minus the row above. Treat the low end as your design target; the high end assumes every stage lands at its best case simultaneously, which real traffic rarely does. |
@@ -141,82 +141,38 @@ genuinely slow, and it sidesteps the timeout instead of fighting it. See
 the pattern, useful for the shape of the integration, not for its Node.js version or SDK calls;
 Amazon archived the repo in December 2023 and no longer updates it.
 
-## Calling Bedrock from Rust
+## Calling Bedrock from Python
 
-AWS ships an official `aws-sdk-bedrockruntime` crate (verified on
-[docs.rs](https://docs.rs/crate/aws-sdk-bedrockruntime/latest), latest release **1.138.0**,
-2026-07-24) as part of the AWS SDK for Rust, and it implements the **Converse API**, Amazon's
-model-agnostic request/response shape that works the same way against Claude, Llama, or Titan.
-Use `converse()` for the synchronous voice path; there's no reason to reach for
-`converse_stream()` here, per the streaming discussion above.
+Use the AWS SDK for Python (`boto3`) and the Bedrock Runtime `converse` API. `Converse` is the
+model-agnostic request/response API; it is the right fit for a short synchronous skill turn.
+Do not use streaming for an Alexa response, and do not hard-code a model ID from an old example:
+model access, model IDs, and inference profiles are account- and region-specific. Check the
+[Bedrock model catalog](https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html)
+for the account and region that run the Lambda.
 
-```toml
-# Cargo.toml
-[dependencies]
-aws-config = "1"
-aws-sdk-bedrockruntime = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-```
+```python
+import boto3
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError, ReadTimeoutError
 
-```rust
-use aws_sdk_bedrockruntime::{Client, types::{ContentBlock, ConversationRole, Message}};
-use std::time::Duration;
-use tokio::time::timeout;
+MODEL_ID = "your-enabled-model-or-inference-profile-id"
+bedrock = boto3.client(
+    "bedrock-runtime",
+    config=Config(connect_timeout=1, read_timeout=3, retries={"max_attempts": 0}),
+)
 
-// Verified against AWS's model card 2026-07-28: Claude Haiku 4.5, lifecycle "Active".
-// Model IDs change as Amazon adds and retires models; re-check yours against the
-// Bedrock model catalog (link below) rather than trusting this string long-term.
-const MODEL_ID: &str = "anthropic.claude-haiku-4-5-20251001-v1:0"; // region- and account-gated
-const MODEL_TIMEOUT: Duration = Duration::from_millis(2_500);
-
-// Build the client once, outside the handler, and reuse it across warm invocations.
-// Constructing it per-invocation throws away connection reuse and adds a chunk of the
-// cold-start cost this page's budget table already charges you for, on every single call.
-async fn call_model(client: &Client, system_prompt: &str, user_text: &str) -> String {
-    let message = match Message::builder()
-        .role(ConversationRole::User)
-        .content(ContentBlock::Text(user_text.into()))
-        .build()
-    {
-        Ok(m) => m,
-        Err(e) => {
-            // A build error here means malformed input reached this far. Fall back
-            // rather than panic: a panic in a Lambda handler path returns no response
-            // at all, not even a canned one.
-            tracing::warn!(error = ?e, "failed to build converse message");
-            return canned_response();
-        }
-    };
-
-    let request = client
-        .converse()
-        .model_id(MODEL_ID)
-        .system(aws_sdk_bedrockruntime::types::SystemContentBlock::Text(system_prompt.into()))
-        .messages(message)
-        .send();
-
-    match timeout(MODEL_TIMEOUT, request).await {
-        Ok(Ok(output)) => extract_text(&output).unwrap_or_else(canned_response),
-        Ok(Err(e)) => {
-            tracing::warn!(error = ?e, "bedrock converse failed");
-            canned_response()
-        }
-        Err(_) => {
-            tracing::warn!("bedrock converse exceeded {:?} budget", MODEL_TIMEOUT);
-            canned_response()
-        }
-    }
-}
-
-fn canned_response() -> String {
-    "I'm having trouble reaching that information right now. Try again in a moment.".into()
-}
-
-fn extract_text(output: &aws_sdk_bedrockruntime::operation::converse::ConverseOutput) -> Option<String> {
-    output.output()?.as_message().ok()?.content().first()?.as_text().ok().map(String::from)
-}
+def call_model(system_prompt: str, user_text: str) -> str:
+    try:
+        response = bedrock.converse(
+            modelId=MODEL_ID,
+            system=[{"text": system_prompt}],
+            messages=[{"role": "user", "content": [{"text": user_text}]}],
+            inferenceConfig={"maxTokens": 160, "temperature": 0.2},
+        )
+        blocks = response["output"]["message"]["content"]
+        return next(block["text"] for block in blocks if "text" in block)
+    except (BotoCoreError, ClientError, ReadTimeoutError, KeyError, StopIteration):
+        return "I'm having trouble reaching that information right now. Try again in a moment."
 ```
 
 The model ID string is region- and account-gated: Bedrock model access is granted per AWS
@@ -228,23 +184,14 @@ page rather than copying one from an old blog post, this page included. Every mo
 states a lifecycle status (Active, Legacy, or Deprecated) and, where applicable, an EOL date;
 check both before you ship, not just the ID string.
 
-`tokio::time::timeout` wrapping the call is not optional here: without it, a slow or throttled
-Bedrock response consumes your entire remaining budget with nothing to show for it. Degrading to
-a canned response is strictly better than letting the Lambda hang until Alexa's own timeout fires
-and the user hears silence or a generic error. Construct the `Client` once, before the Lambda
-runtime's request loop starts, and pass a reference into the handler on every invocation. Building
-it inside the handler recreates the HTTP connection pool and credential resolution on every
-request, warm or cold, which works against the cold-start row you already budgeted for above.
-
-Python readers doing the same integration: use `boto3`'s `bedrock-runtime` client and its
-[`converse()` method](https://docs.aws.amazon.com/boto3/latest/reference/services/bedrock-runtime/client/converse.html),
-paired with the [`ask-sdk-python`](https://github.com/alexa/alexa-skills-kit-sdk-for-python)
-request/response handlers for the skill side. The shape is the same: one call, no streaming, a
-timeout you enforce yourself (Python's `asyncio.wait_for` around the boto3 call, or a bounded
-executor if you're calling synchronously).
+The short client timeouts and canned fallback are not optional. Without them, a slow or throttled
+Bedrock response consumes the Alexa response budget with nothing to show for it. Construct the
+client once at module import so warm Lambda invocations can reuse its HTTP pool. With a synchronous
+handler, boto3's connect/read timeouts are the deadline; if you move the call to an executor,
+bound the executor wait as well.
 
 Backend plumbing (the Lambda handler shape, the request/response envelope, signature
-verification if you're not on Lambda) lives in [Backend in Rust](backend-rust.md).
+verification if you're not on Lambda) lives in [Backend in Python](backend-python.md).
 
 ## Structured output for the dual sink
 
@@ -270,66 +217,42 @@ call it rather than hoping it emits clean JSON in free text. A minimal contract:
 }
 ```
 
-Deserialize it into a Rust struct with `serde_json`, don't hand raw model output to your APL
-builder:
+Validate the tool input in Python before handing it to the APL builder. A standard-library
+validation function is enough for a small fixed schema; use Pydantic or JSON Schema validation
+when the contract grows. Do not hand raw model output to the screen:
 
-```rust
-#[derive(serde::Deserialize)]
-struct AgentResponse {
-    speech: String,
-    display: DisplayPayload,
-}
+```python
+ALLOWED_TRENDS = {"up", "down", "flat"}
 
-#[derive(serde::Deserialize)]
-struct DisplayPayload {
-    headline: String,
-    metrics: Vec<Metric>,
-}
-
-#[derive(serde::Deserialize)]
-struct Metric {
-    label: String,
-    value: MetricValue,
-    trend: Trend,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum MetricValue {
-    Text(String),
-    Number(f64),
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum Trend {
-    Up,
-    Down,
-    Flat,
-}
+def fits_layout(result: dict) -> bool:
+    display = result.get("display")
+    metrics = display.get("metrics") if isinstance(display, dict) else None
+    return (
+        isinstance(result.get("speech"), str)
+        and isinstance(display, dict)
+        and isinstance(display.get("headline"), str)
+        and len(display["headline"]) <= 60
+        and isinstance(metrics, list)
+        and len(metrics) <= 6
+        and all(
+            isinstance(metric, dict)
+            and isinstance(metric.get("label"), str)
+            and len(metric["label"]) <= 40
+            and metric.get("trend") in ALLOWED_TRENDS
+            and isinstance(metric.get("value"), (str, int, float))
+            for metric in metrics
+        )
+    )
 ```
 
-Model output crossing into an APL datasource is a trust boundary, treat it the same way you'd
-treat unsanitized user input, not as a formatting detail. `serde_json::from_str::<AgentResponse>`
-only proves the JSON has the right shape: right field names, right nesting. It says nothing about
-whether the content fits your layout. Two changes narrow that gap instead of just naming it.
-First, `trend` as an enum turns an out-of-set value like `"skyrocketing"` into the same
-deserialization failure a missing field would be, rather than a string your APL template doesn't
-know how to branch on. Second, bound anything with unbounded length yourself after deserializing,
-since no `derive` macro does it for you: a `metrics` array the model pads to twenty rows, or a
-`label` running to a paragraph, both deserialize cleanly and both break a fixed-slot layout.
-
-```rust
-fn fits_layout(r: &AgentResponse) -> bool {
-    r.display.metrics.len() <= 6
-        && r.display.metrics.iter().all(|m| m.label.len() <= 40)
-        && r.display.headline.len() <= 60
-}
-```
+Model output crossing into an APL datasource is a trust boundary, treat it like unsanitized user
+input, not as formatting. Shape validation alone is insufficient: bound list sizes and strings,
+and allow only the `trend` values that the document knows how to render. A metrics array padded to
+twenty rows or a paragraph-long label can be structurally valid and still break a fixed-slot UI.
 
 Validate before this reaches an APL datasource, because APL rendering happens on-device and a
 malformed or oversized datasource fails silently or renders a broken screen with no server-side
-stack trace. Treat a deserialization error and a failed `fits_layout` check the same way: don't
+stack trace. Treat a schema-validation error and a failed `fits_layout` check the same way: don't
 retry the model inside your latency budget, fall straight to a canned `speech` string with no
 `RenderDocument` directive. A voice-only degraded answer beats a half-populated screen or a
 Lambda panic. The mapping from `speech` to `outputSpeech` and `display` to the APL datasource,

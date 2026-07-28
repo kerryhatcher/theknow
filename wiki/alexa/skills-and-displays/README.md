@@ -19,7 +19,7 @@ load-bearing, especially version numbers and quotas, before you build on it.
 <tr><td><strong>The skill</strong></td><td>Manifest (<code>skill.json</code>) plus interaction model: invocation name, intents, slots, utterances. What Alexa's NLU matches speech against.</td><td>Developer Console or JSON in Git, deployed with the ASK CLI.</td><td><a href="skill-setup-and-tooling.md">Setup and tooling</a>, <a href="interaction-model.md">Interaction model</a></td></tr>
 <tr><td><strong>The voice layer</strong></td><td>ASR and NLU, run entirely by Alexa's cloud before your code executes. Turns audio into a typed <code>IntentRequest</code>.</td><td>Amazon's infrastructure, not yours.</td><td><a href="interaction-model.md">Interaction model</a></td></tr>
 <tr><td><strong>The display layer</strong></td><td>APL: a JSON document plus a datasource, rendered by an on-device engine. Conditional, not guaranteed.</td><td>APL Editor in the console, or authored as JSON in your repo.</td><td><a href="apl-displays.md">APL displays</a></td></tr>
-<tr><td><strong>The fulfillment endpoint</strong></td><td>Your backend. Receives the request envelope, returns speech plus optional directives within the response budget.</td><td>AWS Lambda (recommended) or a self-hosted HTTPS server.</td><td><a href="backend-rust.md">Backend in Rust</a></td></tr>
+<tr><td><strong>The fulfillment endpoint</strong></td><td>Your backend. Receives the request envelope, returns speech plus optional directives within the response budget.</td><td>AWS Lambda (recommended) or a self-hosted HTTPS server.</td><td><a href="backend-python.md">Backend in Python</a></td></tr>
 <tr><td><strong>The data/model layer</strong></td><td>Whatever supplies the actual numbers: a database, an API, or an LLM call (Bedrock) that phrases and structures them.</td><td>Inside your fulfillment Lambda, or a store it queries.</td><td><a href="ai-integration.md">AI integration</a></td></tr>
 </tbody></table>
 
@@ -46,18 +46,17 @@ Read this before you design anything. Every sibling page returns to these.
   testers, no certification. See
   [Setup and tooling](skill-setup-and-tooling.md#skill-stages-and-who-can-use-them) and
   [Testing and publishing](testing-and-publishing.md#beta-testing).
-- **Rust has no official SDK.** Node.js, Python, and Java get an Amazon-maintained
-  `ask-sdk`. Rust gets `lambda_runtime` for the Lambda plumbing and hand-rolled `serde`
-  structs for the request/response contract; the one community crate (`alexa_sdk`) is six
-  years stale with no APL support. Budget for structs, not a port. Alexa-hosted skills
-  cannot run Rust at all, only Node.js or Python; Rust requires your own AWS Lambda. See
-  [Backend in Rust](backend-rust.md#the-crate-landscape).
+- **Use Python for a new backend.** Amazon maintains the `ask-sdk-python` request model,
+  dispatcher, response builder, persistence adapter, and web-service integrations. The SDK
+  handles the Alexa envelope so your code can be handlers for `LaunchRequest`, intents, and
+  APL touch events instead of hand-maintained JSON structs. Python is also supported by both
+  Alexa-hosted skills and your own Lambda. See [Backend in Python](backend-python.md).
 
 ## Recommended architecture
 
-Put a Rust Lambda directly behind the Alexa Skills Kit trigger, so Amazon owns transport
+Put a Python Lambda directly behind the Alexa Skills Kit trigger, so Amazon owns transport
 auth and TLS and you never touch request signing. Enable skill-ID verification on that trigger,
-dispatch on `request.type`, and for anything that needs real data, fetch it yourself before
+dispatch with the ASK SDK's request handlers, and for anything that needs real data, fetch it yourself before
 calling a model, then hand the model only the numbers and ask it to phrase a short sentence
 and a typed display payload in one structured call (Bedrock's Converse API with a forced
 tool call is the reliable way to get both shapes back from one request). Wrap that model call
@@ -84,10 +83,9 @@ Echo Show ── mic/touch ──> Alexa cloud (ASR/NLU) ── IntentRequest/Us
 
 This matches the reference architecture and latency guidance in
 [AI integration](ai-integration.md#reference-architecture), and the Lambda trigger's skill-ID
-verification in [Backend in Rust](backend-rust.md#let-the-lambda-trigger-verify-the-skill-id). The
-shape is language-agnostic, Rust is this wiki's own choice; a Node.js or Python fulfillment
-endpoint follows the same diagram with the official `ask-sdk` in place of hand-rolled
-structs.
+verification in [Backend in Python](backend-python.md#secure-the-lambda-invocation). The
+shape is language-agnostic; this guide uses Python because its official `ask-sdk-python`
+turns the envelope and response contract into handlers and response builders.
 
 ## First week: build in this order
 
@@ -99,8 +97,8 @@ structs.
    entirely, one `RenderDocument` with static numbers, driven by the same intent. The
    console preview does not faithfully reproduce on-device rendering, so get onto hardware
    in week one, not right before certification.
-3. **Wire up the real fulfillment backend**: the serde request/response structs, the
-   trigger's skill-ID verification, screen detection via `supportedInterfaces`, and a `TouchWrapper` that
+3. **Wire up the real fulfillment backend**: ASK SDK request handlers, the trigger's
+   skill-ID verification, screen detection via `supportedInterfaces`, and a `TouchWrapper` that
    fires a real `SendEvent` back to your handler.
 4. **Replace hardcoded numbers with your actual data source.** Still no model. Confirm the
    whole voice-plus-touch loop works end to end on real data before adding any AI latency
@@ -146,7 +144,7 @@ structs.
 <tr><td><strong>Setup and tooling</strong></td><td>Accounts, skill stages, the ASK CLI, and hosting trade-offs.</td><td><a href="skill-setup-and-tooling.md">skill-setup-and-tooling.md</a></td></tr>
 <tr><td><strong>Interaction model</strong></td><td>Invocation names, intents, slots, entity resolution, dialog, session state.</td><td><a href="interaction-model.md">interaction-model.md</a></td></tr>
 <tr><td><strong>APL displays</strong></td><td>Rendering and driving a touchable screen with the Alexa Presentation Language.</td><td><a href="apl-displays.md">apl-displays.md</a></td></tr>
-<tr><td><strong>Backend in Rust</strong></td><td>The fulfillment contract, serde modeling, and a working Lambda.</td><td><a href="backend-rust.md">backend-rust.md</a></td></tr>
+<tr><td><strong>Backend in Python</strong></td><td>The official ASK SDK, a working Lambda, persistence, and deployment.</td><td><a href="backend-python.md">backend-python.md</a></td></tr>
 <tr><td><strong>AI integration</strong></td><td>Fitting a model call into the response budget, plus structured output for speech and screen.</td><td><a href="ai-integration.md">ai-integration.md</a></td></tr>
 <tr><td><strong>Testing and publishing</strong></td><td>The testing ladder, beta testing, certification, and distribution.</td><td><a href="testing-and-publishing.md">testing-and-publishing.md</a></td></tr>
 </tbody></table>
@@ -160,6 +158,5 @@ structs.
 - [Certification Requirements for Alexa Skills](https://developer.amazon.com/en-US/docs/alexa/custom-skills/certification-requirements-for-custom-skills.html), Amazon developer docs
 - [Amazon Bedrock](https://aws.amazon.com/bedrock/), AWS
 - [Alexa Skills Kit](https://developer.amazon.com/en-US/alexa/alexa-skills-kit), Amazon developer portal
-- [cargo-lambda](https://www.cargo-lambda.info/), build/deploy tooling for Rust on Lambda
-- [`lambda_runtime`](https://crates.io/crates/lambda_runtime), crates.io, the AWS-maintained Rust Lambda runtime
-- [ask-sdk-python](https://github.com/alexa/alexa-skills-kit-sdk-for-python), GitHub, the officially supported Python SDK
+- [ASK SDK for Python](https://developer.amazon.com/en-US/docs/alexa/alexa-skills-kit-sdk-for-python/set-up-the-sdk.html), Amazon developer docs
+- [Host a Custom Skill as an AWS Lambda Function](https://developer.amazon.com/en-US/docs/alexa/custom-skills/host-a-custom-skill-as-an-aws-lambda-function.html), Amazon developer docs

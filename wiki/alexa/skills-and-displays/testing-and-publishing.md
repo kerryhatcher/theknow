@@ -7,7 +7,7 @@ description: Testing strategy, certification checklist, distribution paths, and 
 The path from working locally to live on other people's devices. This covers the testing ladder
 (cheapest first), beta distribution, the certification gauntlet, versioning discipline, and the
 analytics you get after launch. Assumes you have a [skill interaction model](interaction-model.md)
-and [backend](backend-rust.md) already working; this is about validating it and moving
+and [backend](backend-python.md) already working; this is about validating it and moving
 it forward.
 
 ## Testing ladder
@@ -17,14 +17,14 @@ what it does and doesn't prove.
 
 | What | Cost | Catches | Misses |
 |---|---|---|---|
-| Unit tests (serde, request/response JSON) | Near-free | Request contract shape, handler logic, serialization | Real NLU matching, device latency, APL rendering |
+| Unit tests (ASK SDK handlers and responses) | Near-free | Handler routing, response shape, screen gating | Real NLU matching, device latency, APL rendering |
 | `ask dialog` + `ask simulate` | 1–2s per invocation | Multi-turn utterances, intent routing, speech output | APL display, touch behavior, real device quirks |
 | Developer Console simulator | 1–2 clicks | Voice/text input, APL preview on multiple screen sizes, full JSON inspection | APL touch events, timing, performance under load, actual device rendering fidelity |
 | APL Authoring Tool preview | Drag/drop + live | Component layout, responsiveness across viewports | On-device rendering, animations, tap zones at actual DPI, scrolling feel |
 | Physical device (Echo Show) | Marginal | Pixel-perfect layout, touch hit zones, animations, actual response latency, real firmware behavior | Rare firmware/hardware bugs, full fleet behavior variance |
 
 **Unit tests:** run your normal test suite (`cargo test`, `pytest`) against the serialized JSON your
-handler produces and consumes. This catches a broken serde tag or a missing field before you ever
+handler produces and consumes. This catches a broken handler predicate or a missing response field before you ever
 invoke Alexa. It proves nothing about whether Alexa's NLU will actually route an utterance to your
 intent.
 

@@ -73,18 +73,16 @@ dead weight, and Amazon's certification checklist for public skills checks that 
 interface support rather than assume a screen. Every request carries
 `context.System.device.supportedInterfaces`; check for the `Alexa.Presentation.APL` key.
 
-```rust
-fn has_display(envelope: &serde_json::Value) -> bool {
-    envelope["context"]["System"]["device"]["supportedInterfaces"]
-        .get("Alexa.Presentation.APL")
-        .is_some()
-}
+```python
+import ask_sdk_core.utils as ask_utils
 
-// In the response builder: only push the RenderDocument directive when this is true,
-// but always set outputSpeech either way.
-if has_display(&envelope) {
-    directives.push(render_document_directive);
-}
+def has_display(handler_input):
+    return "Alexa.Presentation.APL" in ask_utils.get_supported_interfaces(handler_input)
+
+# In every handler: add RenderDocument only when this is true,
+# but always call response_builder.speak(...).
+if has_display(handler_input):
+    response_builder.add_directive(render_document_directive)
 ```
 
 Always populate `outputSpeech` regardless of `has_display`. That's not just the fallback for
@@ -190,30 +188,13 @@ backend endpoint.
    top-level `request.token`, the same document token from the `RenderDocument` that put this
    screen up. Capture the token, you need it to target this document with `ExecuteCommands`.
 
-```rust
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AplUserEvent {
-    token: String,
-    arguments: Vec<serde_json::Value>,
-    source: serde_json::Value,
-}
-
-fn handle_apl_user_event(request: &serde_json::Value) -> serde_json::Value {
-    // Never unwrap or expect in the handler path. A panic returns no response at all,
-    // so the user hears Alexa's generic error. See the backend page on error handling.
-    let event: AplUserEvent = match serde_json::from_value(request.clone()) {
-        Ok(event) => event,
-        Err(_) => return render_fallback_speech("Something went wrong with that screen."),
-    };
-    match event.arguments.as_slice() {
-        [metric_id, action] if action == "drillIn" => {
-            let metric = metric_id.as_str().unwrap_or_default();
-            render_detail_screen(metric, &event.token)
-        }
-        _ => render_fallback_speech("I didn't catch that."),
-    }
-}
+```python
+def handle_apl_user_event(handler_input):
+    event = handler_input.request_envelope.request
+    arguments = event.arguments or []
+    if len(arguments) == 2 and arguments[1] == "drillIn" and isinstance(arguments[0], str):
+        return render_detail_screen(handler_input, metric=arguments[0], token=event.token)
+    return handler_input.response_builder.speak("I didn't catch that.").response
 ```
 
 1. Your handler decides what changed and responds with a new directive, either a fresh
@@ -330,24 +311,11 @@ converge on.
 }
 ```
 
-**Rust structs that build that datasource:**
+**Python data object that builds that datasource:**
 
-```rust
-use serde::Serialize;
-
-#[derive(Serialize)]
-struct Dashboard { dash: DashPayload }
-
-#[derive(Serialize)]
-struct DashPayload { title: String, metrics: Vec<MetricTile> }
-
-#[derive(Serialize)]
-struct MetricTile { id: String, label: String, value: String }
-
-fn build_dashboard_datasources(title: &str, metrics: Vec<MetricTile>) -> serde_json::Value {
-    let dashboard = Dashboard { dash: DashPayload { title: title.into(), metrics } };
-    serde_json::to_value(dashboard).expect("Dashboard always serializes")
-}
+```python
+def build_dashboard_datasources(title: str, metrics: list[dict]) -> dict:
+    return {"dash": {"title": title, "metrics": metrics}}
 ```
 
 Tapping a tile fires `SendEvent(["cpu", "drillIn"])`, routed by the handler shown earlier to a
@@ -405,7 +373,7 @@ object, append it to `response_builder.add_directive(...)`, no manual JSON assem
 
 - [Interaction model](interaction-model.md), voice intents, slots, and the session-state
   mechanics this page's drill-in section depends on.
-- [Backend](backend-rust.md), the fulfillment endpoint that receives `UserEvent` requests and
+- [Backend](backend-python.md), the fulfillment endpoint that receives `UserEvent` requests and
   returns directives.
 - [AI integration](ai-integration.md), the latency budget when an LLM sits between a request
   and the datasource you render.
