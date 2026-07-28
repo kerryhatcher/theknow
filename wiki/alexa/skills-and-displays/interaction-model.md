@@ -1,5 +1,5 @@
 ---
-description: How an utterance becomes a typed request your backend can switch on: invocation names, intents, slots, entity resolution, dialog management, and session state.
+description: How an utterance becomes a typed request your backend can switch on, covering invocation names, intents, slots, entity resolution, dialog management, and session state.
 ---
 
 # The interaction model
