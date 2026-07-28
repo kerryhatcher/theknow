@@ -1,0 +1,437 @@
+---
+description: The fulfillment endpoint contract for a custom Alexa skill, and how to implement it in Rust on AWS Lambda.
+---
+
+# The fulfillment backend in Rust
+
+Once a user talks to an Echo device, Alexa's cloud does the speech recognition and language
+understanding and turns the utterance into a JSON request. That request gets POSTed to your
+fulfillment endpoint. Your endpoint has about 8 seconds to return a JSON response containing
+speech (and, on a screen device, a display directive). This page covers that endpoint: the
+transport choice, the security you owe, the request/response contract, and a working Rust
+Lambda that implements it.
+
+## Lambda or HTTPS: decide this first
+
+Use a Lambda function as your endpoint unless you have a concrete reason not to. The reason:
+with Lambda, Alexa's service invokes your function directly through the Lambda service, not
+over public HTTPS, so Amazon owns both the transport authentication and TLS. With a raw HTTPS
+endpoint, Alexa POSTs to your URL like any other webhook caller, and you become responsible
+for proving every incoming request actually came from Alexa. Skip that proof and anyone who
+finds your URL can send forged requests your skill will happily act on.
+
+<table><thead><tr><th></th><th>Lambda endpoint</th><th>HTTPS endpoint</th></tr></thead><tbody>
+<tr><td>Transport auth</td><td>Handled by AWS IAM/STS invocation, nothing to verify</td><td>You verify the <code>SignatureCertChainUrl</code> chain and the request signature yourself</td></tr>
+<tr><td>TLS</td><td>Not your problem</td><td>Your cert must chain to an Amazon-trusted CA; self-signed fails certification</td></tr>
+<tr><td>Hosting</td><td>AWS owns scaling and availability</td><td>You run and patch a server</td></tr>
+<tr><td>Language freedom</td><td>Any Lambda-supported runtime, including a custom Rust runtime</td><td>Any language, any framework</td></tr>
+<tr><td>Cold starts</td><td>Real, budget for them (see below)</td><td>None, if the process stays warm</td></tr>
+</tbody></table>
+
+Pick HTTPS only if the fulfillment logic must live in an existing always-on service that
+other callers also hit. Otherwise Lambda deletes an entire category of security code you'd
+otherwise have to write and maintain. See the official comparison:
+[Host a Custom Skill as a Web Service](https://developer.amazon.com/en-US/docs/alexa/custom-skills/host-a-custom-skill-as-a-web-service.html)
+versus
+[Host a Custom Skill as an AWS Lambda Function](https://developer.amazon.com/en-US/docs/alexa/custom-skills/host-a-custom-skill-as-an-aws-lambda-function.html).
+
+{% hint style="warning" %}
+If you do go HTTPS, the checklist is non-negotiable and enforced at certification: validate
+that `SignatureCertChainUrl` points to `https://s3.amazonaws.com/echo.api/...`, fetch and
+cache that cert chain, confirm the leaf certificate's SAN includes `echo-api.amazon.com`,
+verify the `Signature-256` header against the raw request body, and reject anything where
+`request.timestamp` is more than 150 seconds old. All five, every request. Details in the
+web-service doc above.
+{% endhint %}
+
+## Lambda still owes you one check
+
+Amazon authenticating the *invocation* is not the same as Amazon authenticating that the
+request belongs to *your* skill. The Alexa Skills Kit trigger on your Lambda can be scoped
+to one Skill ID, but that scoping happens in the Lambda resource policy, a separate piece of
+config from your code, and it's easy to leave off or misconfigure. Belt and suspenders: check
+it yourself, in the handler, every time.
+
+```rust
+const EXPECTED_SKILL_ID: &str = "amzn1.ask.skill.REPLACE-WITH-YOUR-SKILL-ID";
+
+fn verify_skill_id(envelope: &serde_json::Value) -> Result<(), &'static str> {
+    let app_id = envelope["context"]["System"]["application"]["applicationId"]
+        .as_str()
+        .unwrap_or_default();
+    if app_id != EXPECTED_SKILL_ID {
+        return Err("application id mismatch");
+    }
+    Ok(())
+}
+```
+
+Check `context.System.application.applicationId` (present on every request type) rather
+than only `session.application.applicationId` (absent on some). Do this before you branch on
+`request.type`, not after. It's two lines and it's the one thing standing between "my Lambda"
+and "anyone's Lambda that happens to share this ARN."
+
+## The request and response contract
+
+Every request is a JSON envelope: `version`, `session`, `context`, and `request`.
+`request.type` discriminates what happened:
+
+- **`LaunchRequest`**, the user opened the skill with no specific ask ("Alexa, open my skill").
+- **`IntentRequest`**, the user said something matching a defined intent. Carries
+  `request.intent.name` and `request.intent.slots`.
+- **`SessionEndedRequest`**, the session is closing (timeout, "stop," or an error). You
+  cannot return speech to it, just acknowledge with an empty response.
+- **`Alexa.Presentation.APL.UserEvent`**, the user touched something on an APL document (a
+  button, for example). Carries `request.arguments` and `request.source`.
+
+Full field-by-field reference:
+[Request and Response JSON Reference](https://developer.amazon.com/en-US/docs/alexa/custom-skills/request-and-response-json-reference.html).
+Don't try to reproduce that page here; the shape matters more than the exhaustive field list,
+and it changes by request type in ways a static doc dump won't help you reason about.
+
+### Modeling it in serde
+
+`request.type` is a textbook internally-tagged enum: one JSON object, one field
+(`"type"`) picks the variant, the rest of the object's fields belong to that variant. That's
+exactly what `#[serde(tag = "type")]` does, and it's the right tool here, not an
+externally-tagged or untagged enum. Externally-tagged (serde's default for a plain enum)
+would want `{"LaunchRequest": {...}}`, which isn't Alexa's shape. Untagged would work but
+throws away the discriminator as a compile-time exhaustiveness check and degrades error
+messages when a new request type shows up.
+
+```rust
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestEnvelope {
+    pub version: String,
+    pub session: Option<Session>,
+    pub context: Value,
+    pub request: RequestBody,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Session {
+    #[serde(default)]
+    pub new: bool,
+    pub session_id: String,
+    #[serde(default)]
+    pub attributes: HashMap<String, Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum RequestBody {
+    LaunchRequest {
+        request_id: String,
+    },
+    IntentRequest {
+        request_id: String,
+        intent: Intent,
+    },
+    SessionEndedRequest {
+        request_id: String,
+        reason: String,
+    },
+    #[serde(rename = "Alexa.Presentation.APL.UserEvent")]
+    AplUserEvent {
+        request_id: String,
+        arguments: Vec<Value>,
+        source: Value,
+    },
+    // Anything Alexa adds later deserializes here instead of failing the whole request.
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Deserialize)]
+pub struct Intent {
+    pub name: String,
+    #[serde(default)]
+    pub slots: HashMap<String, Value>,
+}
+```
+
+The `#[serde(other)]` catch-all is not decoration. Alexa adds request types over time
+(APL UserEvent itself is one such addition), and without it a single unrecognized type fails
+deserialization for the whole envelope instead of falling through to a default response.
+
+The response side is where `Option` and `skip_serializing_if` matter, because Alexa's JSON
+parser is strict about the shape it receives: a `null` where a field is simply absent, or an
+unexpected key, can fail skill certification or get silently ignored depending on the field.
+Every optional response field should serialize as *absent*, never as `null`.
+
+```rust
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ResponseEnvelope {
+    pub version: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_attributes: Option<HashMap<String, Value>>,
+    pub response: ResponseBody,
+}
+
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ResponseBody {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_speech: Option<OutputSpeech>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub card: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reprompt: Option<Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub directives: Vec<Value>,
+    // Omit entirely when responding to an APL UserEvent; including it can
+    // conflict with the display's own session-state expectations.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub should_end_session: Option<bool>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputSpeech {
+    #[serde(rename = "type")]
+    pub speech_type: &'static str, // "PlainText" or "SSML"
+    pub text: String,
+}
+```
+
+`directives` and `card` stay as `serde_json::Value` on purpose. The APL document schema is
+large, versioned, and usually built from a template with a few substituted values, so a full
+Rust struct model buys little; see [APL displays](apl-displays.md) for the document shape
+itself. Type the fields you branch your logic on (`request`, `intent.name`, slots), and leave
+the fields you only pass through as `Value`. Mixing both in one struct is normal.
+
+## The crate landscape
+
+Checked directly on crates.io and docs.rs, not from memory, July 2026.
+
+| Crate | Version (July 2026) | Last release | Verdict |
+|---|---|---|---|
+| [`lambda_runtime`](https://crates.io/crates/lambda_runtime) | 1.3.0 | 2026-07-09 | Use it. AWS-maintained, actively released, this is the standard way to run Rust on Lambda. |
+| [`aws_lambda_events`](https://crates.io/crates/aws_lambda_events) | 1.2.0 | 2026-05-08 | Skip for this use case. It types API Gateway/ALB/SQS-style events; Alexa invokes Lambda directly with its own JSON shape, not through one of these event sources. |
+| [`alexa_sdk`](https://crates.io/crates/alexa_sdk) | 0.1.5 | 2020-01-02 | Don't depend on it. Six years stale, ~20% doc coverage on docs.rs, only two structs (`Request`/`Response`), and **no APL support at all**, no directive types, nothing for `Alexa.Presentation.APL.UserEvent`. |
+| `cargo-lambda` (CLI, not a crate) | current per [cargo-lambda.info](https://www.cargo-lambda.info/) | active | Use it for build/deploy/local-invoke tooling, covered below. |
+
+There is no official Amazon-published Rust SDK for the Alexa Skills Kit, unlike the official
+SDKs for Node.js, Python, and Java. Given `alexa_sdk`'s staleness and missing APL support,
+hand-rolled serde structs like the ones above are the normal answer for a Rust skill backend
+in 2026, not a stopgap. If you're coming from Python, the officially supported
+[`ask-sdk-python`](https://github.com/alexa/alexa-skills-kit-sdk-for-python) gives you a
+request/response object model and a decorator-based handler dispatch (`@sdk_builder`-style
+request handlers) that Rust simply has no equivalent for. Node.js has the matching official
+`ask-sdk` package. Rust has neither; budget for the structs above instead of hunting for a
+port.
+
+## A minimal end-to-end Lambda
+
+`Cargo.toml`, versions verified on crates.io at time of writing:
+
+```toml
+[dependencies]
+lambda_runtime = "1.3"
+tokio = { version = "1", features = ["macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+```
+
+`main.rs`, dispatching on request type and returning speech plus a conditional APL directive:
+
+```rust
+use lambda_runtime::{run, service_fn, Error, LambdaEvent};
+use serde_json::{json, Value};
+
+const SKILL_ID: &str = "amzn1.ask.skill.REPLACE-WITH-YOUR-SKILL-ID";
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    tracing_subscriber::fmt().json().init();
+    run(service_fn(handler)).await
+}
+
+async fn handler(event: LambdaEvent<Value>) -> Result<Value, Error> {
+    let envelope = event.payload;
+
+    let app_id = envelope["context"]["System"]["application"]["applicationId"]
+        .as_str()
+        .unwrap_or_default();
+    if app_id != SKILL_ID {
+        // Return a valid, speakable response rather than an Err; see Error handling below.
+        return Ok(end_response("Sorry, something went wrong."));
+    }
+
+    let request_type = envelope["request"]["type"].as_str().unwrap_or_default();
+
+    Ok(match request_type {
+        "LaunchRequest" => launch_response(),
+        "IntentRequest" => {
+            let intent_name = envelope["request"]["intent"]["name"].as_str().unwrap_or_default();
+            match intent_name {
+                "ShowStatusIntent" => show_status_response(),
+                "AMAZON.StopIntent" | "AMAZON.CancelIntent" => end_response("Goodbye!"),
+                _ => end_response("Sorry, I didn't understand that."),
+            }
+        }
+        "SessionEndedRequest" => json!({ "version": "1.0", "response": {} }),
+        "Alexa.Presentation.APL.UserEvent" => handle_apl_event(&envelope),
+        _ => end_response("Sorry, I can't do that yet."),
+    })
+}
+
+fn launch_response() -> Value {
+    json!({
+        "version": "1.0",
+        "response": {
+            "outputSpeech": { "type": "PlainText", "text": "Welcome. Say show status." },
+            "shouldEndSession": false
+        }
+    })
+}
+
+fn show_status_response() -> Value {
+    json!({
+        "version": "1.0",
+        "response": {
+            "outputSpeech": { "type": "PlainText", "text": "Here's the current status." },
+            "directives": [{
+                "type": "Alexa.Presentation.APL.RenderDocument",
+                "token": "statusToken",
+                "document": { "type": "APL", "version": "2024.3", "mainTemplate": { "items": [
+                    { "type": "Text", "text": "System status: OK", "fontSize": "48dp" }
+                ] } },
+                "datasources": {}
+            }],
+            "shouldEndSession": false
+        }
+    })
+}
+
+fn handle_apl_event(envelope: &Value) -> Value {
+    let source_id = envelope["request"]["source"]["id"].as_str().unwrap_or_default();
+    end_response(&format!("You touched {}.", source_id))
+}
+
+fn end_response(speech: &str) -> Value {
+    json!({
+        "version": "1.0",
+        "response": {
+            "outputSpeech": { "type": "PlainText", "text": speech },
+            "shouldEndSession": true
+        }
+    })
+}
+```
+
+This sketch uses `serde_json::Value` throughout rather than the typed structs above, to keep
+the example short. Swap in `RequestEnvelope`/`ResponseEnvelope` once the match arms outgrow a
+handful of intents; see [Interaction model](interaction-model.md) for how the intent set
+itself is defined.
+
+Build and deploy with [cargo-lambda](https://www.cargo-lambda.info/):
+
+```bash
+cargo lambda build --release --arm64
+cargo lambda deploy --iam-role <your-lambda-execution-role-arn>
+```
+
+`cargo lambda build` cross-compiles for the `provided.al2023` custom runtime; `--arm64`
+targets Graviton. `cargo lambda deploy` uploads the built binary, creating the function on
+first run and updating its code on subsequent runs
+([cargo-lambda deploy docs](https://www.cargo-lambda.info/commands/deploy.html)). There's
+also a manual `zip`-and-upload path if you'd rather not add the tool, but cargo-lambda is the
+maintained way to do this and handles the `bootstrap` binary naming for you.
+
+## Deployment wiring
+
+Two places need to agree, and a mismatch here is the most common "why doesn't my skill
+respond" bug:
+
+1. The skill manifest's endpoint (in the developer console, or in `skill.json` if you manage
+   it as code) points at your Lambda's ARN.
+2. The Lambda itself needs an **Alexa Skills Kit trigger**, which adds a resource-based policy
+   statement granting `alexa-appkit.amazon.com` permission to invoke the function, scoped to
+   your Skill ID if you set skill ID verification on the trigger. Without this trigger, the
+   invocation from Alexa's side is simply denied, regardless of what the manifest says.
+
+Prefer arm64 (Graviton) over x86_64 for both cost and cold-start latency; Rust's small binary
+size means the difference is more pronounced than for a JVM or Node function with heavy
+dependencies, but it's still real. Cold starts matter specifically because Alexa's own
+timeout budget is fixed at roughly 8 seconds end to end, and a cold start eats into the same
+budget that an AI-agent call would need; see [AI integration](ai-integration.md) for how that
+budget gets split when the fulfillment logic calls out to a model.
+
+## Error handling
+
+If your Lambda times out or throws, Alexa doesn't retry indefinitely and doesn't show a
+stack trace. It speaks a generic error message to the user and ends the session, no useful
+detail passed through. That's a bad user experience but more importantly it's a support
+dead end, because you learn nothing about what happened from the user's side.
+
+The fix is structural: never let an unhandled error propagate out of the handler. Catch every
+failure path inside your own code and always return a valid response with real speech, even
+if that speech is just an apology. The catch-all pattern above (`end_response("Sorry,
+something went wrong.")` on the skill-ID mismatch, `_ => end_response(...)` on unrecognized
+request types and intents) is the general shape: exhaust your `match` arms with a fallback
+that speaks, not one that returns `Err`. Reserve an actual `Err` return from the handler for
+cases you want Lambda's own retry/monitoring behavior on, which for a synchronous voice
+response is close to never.
+
+## Local development and testing
+
+`cargo lambda watch` starts a local emulator of the Lambda control plane and hot-recompiles
+on changes; `cargo lambda invoke` sends a payload to it (or to a deployed function with
+`--remote`). Point it at a captured request JSON:
+
+```bash
+cargo lambda watch &
+cargo lambda invoke your-function-name --data-file test-requests/launch-request.json
+```
+
+([cargo-lambda invoke docs](https://www.cargo-lambda.info/commands/invoke.html).) For real
+request payloads to capture and replay, the Alexa developer console's **Test** tab shows the
+exact JSON request and response for each utterance you try, and is the easiest source of a
+realistic fixture set covering all four request types. See
+[Skill setup and tooling](skill-setup-and-tooling.md) for getting the console test tab and a
+build pipeline running in the first place.
+
+## Observability
+
+CloudWatch Logs is where your Lambda's `tracing` output and any panics land, and the developer
+console's own request/response log (under the skill's Test or Analytics views) separately
+shows what Alexa actually sent and received for a given session, which is useful for
+diagnosing a mismatch between what you logged and what Alexa's parser accepted.
+
+Log request type, intent name, and your own decision points freely. Do not log the raw
+utterance text or the `userId`/`deviceId` values; both are personal data under Alexa's own
+developer policies, and a debug log is not the place to accumulate them. If you need to
+correlate a session across log lines, use `sessionId`, which is scoped to one conversation
+and not tied to a person the way a stable `userId` is.
+
+## See also
+
+- [Skill setup and tooling](skill-setup-and-tooling.md), console setup, manifest, and build
+  pipeline this endpoint plugs into.
+- [Interaction model](interaction-model.md), how intents and slots are defined upstream of
+  the `IntentRequest` this page parses.
+- [APL displays](apl-displays.md), the document schema behind the `directives` field.
+- [AI integration](ai-integration.md), what happens when the handler calls out to a model
+  before it can answer, and how that fits the same latency budget as a cold start.
+
+## Sources
+
+- [Host a Custom Skill as an AWS Lambda Function](https://developer.amazon.com/en-US/docs/alexa/custom-skills/host-a-custom-skill-as-an-aws-lambda-function.html), Amazon developer docs.
+- [Host a Custom Skill as a Web Service](https://developer.amazon.com/en-US/docs/alexa/custom-skills/host-a-custom-skill-as-a-web-service.html), Amazon developer docs. Signature/cert-chain/timestamp requirements.
+- [Request and Response JSON Reference](https://developer.amazon.com/en-US/docs/alexa/custom-skills/request-and-response-json-reference.html), Amazon developer docs.
+- [`lambda_runtime`](https://crates.io/crates/lambda_runtime), crates.io, checked July 2026 (v1.3.0, released 2026-07-09).
+- [`aws_lambda_events`](https://crates.io/crates/aws_lambda_events), crates.io, checked July 2026 (v1.2.0).
+- [`alexa_sdk`](https://crates.io/crates/alexa_sdk) / [docs.rs](https://docs.rs/alexa_sdk/latest/alexa_sdk/), checked July 2026 (v0.1.5, last released 2020-01-02).
+- [`aws-lambda-rust-runtime`](https://github.com/awslabs/aws-lambda-rust-runtime), GitHub, AWS-maintained.
+- [cargo-lambda documentation](https://www.cargo-lambda.info/), build/deploy/watch/invoke commands.
+- [ask-sdk-python](https://github.com/alexa/alexa-skills-kit-sdk-for-python), the officially supported Python SDK.
